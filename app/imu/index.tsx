@@ -12,48 +12,50 @@ import Legend from '../../components/ui/Legend';
 const MAX_LENGTH = 100; // Maximum number of items to keep in the chart
 
 export default function DevicesScreen() {
-  const [heartRateData, setHeartRateData] = useState([]);
-  const [rawData, setRawdata] = useState({
-    red: [],
-    green: [],
-    ir: [],
+  const [accRateData, setAccRateData] = useState({
+    x: [],
+    y: [],
+    z: [],
+  });
+  const [gyroData, setGyroData] = useState({
+    x: [],
+    y: [],
+    z: [],
+    w: [],
   });
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation();
   const router = useRouter();
-  const heartRateChartRef = useRef(null)
-  const rawDataChartRef = useRef(null)
-
-  const handleBack = () => {
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-    } else {
-      router.replace('/'); // or wherever your "home" screen is
-    }
-  };
+  const accRateChartRef = useRef(null)
+  const gyroDataChartRef = useRef(null)
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setRawdata(prevData => {
+      setGyroData(prevData => {
         const updatedData = {
-          red: [...prevData.red, {
+          x: [...prevData.x, {
             value: Math.floor(Math.random() * 100),
-            label: `${prevData.red.length + 1}`
+            label: `${prevData.x.length + 1}`
           }],
-          green: [...prevData.green, {
+          y: [...prevData.y, {
             value: Math.floor(Math.random() * 100),
-            label: `${prevData.green.length + 1}`
+            label: `${prevData.y.length + 1}`
           }],
-          ir: [...prevData.ir, {
+          z: [...prevData.z, {
             value: Math.floor(Math.random() * 100),
-            label: `${prevData.ir.length + 1}`
+            label: `${prevData.z.length + 1}`
+          }],
+          w: [...prevData.w, {
+            value: Math.floor(Math.random() * 100),
+            label: `${prevData.w.length + 1}`
           }],
         };
         // Trim older items if the new list is longer than MAX_LENGTH
-        if (updatedData.red.length > MAX_LENGTH) {
-          updatedData.red = updatedData.red.slice(updatedData.red.length - MAX_LENGTH);
-          updatedData.green = updatedData.green.slice(updatedData.green.length - MAX_LENGTH);
-          updatedData.ir = updatedData.ir.slice(updatedData.ir.length - MAX_LENGTH);
+        if (updatedData.x.length > MAX_LENGTH) {
+          updatedData.x = updatedData.x.slice(updatedData.x.length - MAX_LENGTH);
+          updatedData.y = updatedData.y.slice(updatedData.y.length - MAX_LENGTH);
+          updatedData.z = updatedData.z.slice(updatedData.z.length - MAX_LENGTH);
+          updatedData.w = updatedData.w.slice(updatedData.w.length - MAX_LENGTH);
         }
         return updatedData;
       });
@@ -66,14 +68,26 @@ export default function DevicesScreen() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setHeartRateData(prevData => {
-        const updatedData = [...prevData, {
-          value: Math.floor(Math.random() * 100), // Random value for demonstration
-          label: `${prevData.length + 1}`
-        }];
+      setAccRateData(prevData => {
+        const updatedData = {
+          x: [...prevData.x, {
+            value: Math.floor(Math.random() * 100),
+            label: `${prevData.x.length + 1}`
+          }],
+          y: [...prevData.y, {
+            value: Math.floor(Math.random() * 100),
+            label: `${prevData.y.length + 1}`
+          }],
+          z: [...prevData.z, {
+            value: Math.floor(Math.random() * 100),
+            label: `${prevData.z.length + 1}`
+          }]
+        };
         // Trim older items if the new list is longer than MAX_LENGTH
-        if (updatedData.length > MAX_LENGTH) {
-          return updatedData.slice(updatedData.length - MAX_LENGTH);
+        if (updatedData.x.length > MAX_LENGTH) {
+          updatedData.x = updatedData.x.slice(updatedData.x.length - MAX_LENGTH);
+          updatedData.y = updatedData.y.slice(updatedData.y.length - MAX_LENGTH);
+          updatedData.z = updatedData.z.slice(updatedData.z.length - MAX_LENGTH);
         }
         return updatedData;
       });
@@ -85,16 +99,17 @@ export default function DevicesScreen() {
   }, []);
 
   useEffect(() => {
-    if (heartRateChartRef.current) {
-      heartRateChartRef.current.scrollToEnd({ animated: true });
+    if (accRateChartRef.current) {
+      accRateChartRef.current.scrollToEnd({ animated: true });
     }
-  }, [heartRateData]);
+  }, [accRateData]);
 
   useEffect(() => {
-    if (rawDataChartRef.current) {
-      rawDataChartRef.current.scrollToEnd({ animated: true });
+    if (gyroDataChartRef.current) {
+      gyroDataChartRef.current.scrollToEnd({ animated: true });
+      accRateChartRef.current.scrollToEnd({ animated: true });
     }
-  }, [rawData]);
+  }, [gyroData]);
 
 
   return (
@@ -105,7 +120,7 @@ export default function DevicesScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerCenter}>
-          <Text style={styles.title}>PPG</Text>
+          <Text style={styles.title}>IMU</Text>
         </View>
 
         <View style={styles.headerRight}>
@@ -120,46 +135,60 @@ export default function DevicesScreen() {
           <View style={styles.dividerContainer}>
             <View style={styles.dividerLeftSideLine} />
             <View>
-              <Text style={styles.dividerText}>Heart Rate</Text>
-            </View>
-            <View style={styles.dividerRightSideLine} />
-          </View>
-          <LineChart
-            scrollRef={heartRateChartRef}
-            width={Dimensions.get('window').width - 70}
-            hideDataPoints
-            initialSpacing={0}
-            endSpacing={0}
-            data={heartRateData}
-            color='green'
-            curved
-          />
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLeftSideLine} />
-            <View>
-              <Text style={styles.dividerText}>Raw Data</Text>
+              <Text style={styles.dividerText}>Acceleration</Text>
             </View>
             <View style={styles.dividerRightSideLine} />
           </View>
           <Legend
             items={[
-              { label: 'Green', color: 'lime' },
-              { label: 'Red', color: 'red' },
-              { label: 'IR', color: 'black' },
+              { label: 'X', color: 'lime' },
+              { label: 'Y', color: 'red' },
+              { label: 'Z', color: 'black' },
             ]}
           />
           <LineChart
-            scrollRef={rawDataChartRef}
+            scrollRef={accRateChartRef}
             width={Dimensions.get('window').width - 70}
             hideDataPoints
             initialSpacing={0}
             endSpacing={0}
-            data={rawData.red}
-            data2={rawData.green}
-            data3={rawData.ir}
+            data={gyroData.x}
+            data2={gyroData.y}
+            data3={gyroData.z}
             color1="red"
             color2="green"
             color3="black"
+            curved
+          />
+          <View style={styles.dividerContainer}>
+            <View style={styles.dividerLeftSideLine} />
+            <View>
+              <Text style={styles.dividerText}>Gyro</Text>
+            </View>
+            <View style={styles.dividerRightSideLine} />
+          </View>
+          <Legend
+            items={[
+              { label: 'X', color: 'lime' },
+              { label: 'Y', color: 'red' },
+              { label: 'Z', color: 'blue' },
+              { label: 'W', color: 'black' },
+            ]}
+          />
+          <LineChart
+            scrollRef={gyroDataChartRef}
+            width={Dimensions.get('window').width - 70}
+            hideDataPoints
+            initialSpacing={0}
+            endSpacing={0}
+            data={gyroData.x}
+            data2={gyroData.y}
+            data3={gyroData.z}
+            data4={gyroData.w}
+            color1="red"
+            color2="green"
+            color3="blue"
+            color4="black"
             curved
           />
         </ScrollView>

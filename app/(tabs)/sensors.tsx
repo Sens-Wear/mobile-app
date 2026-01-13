@@ -24,6 +24,7 @@ export default function SensorsScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
+        <View style={styles.headerLeft}></View>
         <View style={styles.headerCenter}>
           <Image source={require('@/assets/images/logo.jpg')} style={styles.logo} resizeMode="contain" />
         </View>

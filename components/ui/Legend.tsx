@@ -1,23 +1,24 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
-const Legend = () => {
+type LegendItem = {
+  label: string;
+  color: string;
+};
+
+type LegendProps = {
+  items: LegendItem[];
+};
+
+const Legend = ({ items }: LegendProps) => {
   return (
     <View style={styles.container}>
-      <View style={styles.item}>
-        <View style={[styles.line, { backgroundColor: 'lime' }]} />
-        <Text style={styles.label}>Green Channel</Text>
-      </View>
-
-      <View style={styles.item}>
-        <View style={[styles.line, { backgroundColor: 'red' }]} />
-        <Text style={styles.label}>Red Channel</Text>
-      </View>
-
-      <View style={styles.item}>
-        <View style={[styles.line, { backgroundColor: 'black' }]} />
-        <Text style={styles.label}>IR Channel</Text>
-      </View>
+      {items.map((item) => (
+        <View key={`${item.label}-${item.color}`} style={styles.item}>
+          <View style={[styles.line, { backgroundColor: item.color }]} />
+          <Text style={styles.label}>{item.label}</Text>
+        </View>
+      ))}
     </View>
   );
 };
