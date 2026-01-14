@@ -1,0 +1,3 @@
+export const IMU_CONSTANTS = {
+    QUATERNION_DIVISION: 16384.0
+};
