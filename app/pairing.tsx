@@ -11,6 +11,7 @@ export default function DevicesScreen() {
   const { pair, isConnecting, error } = useBle();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isPairing, setIsPairing] = useState(false);
   const navigation = useNavigation();
   const router = useRouter();
 
@@ -98,11 +99,20 @@ export default function DevicesScreen() {
   };
 
   const handleSelectDevice = async (device) => {
+    setIsPairing(true);
     var ret = await pair(device.id);
     if (ret) {
       router.push({ pathname: '/sensors', params: { deviceId: device.id } });
+      return;
     }
+    setIsPairing(false);
   };
+
+  useEffect(() => {
+    if (error) {
+      setIsPairing(false);
+    }
+  }, [error]);
 
   return (
     <View style={styles.container}>
@@ -134,6 +144,11 @@ export default function DevicesScreen() {
             </TouchableOpacity>
           )}
         />
+      )}
+      {isPairing && (
+        <View style={styles.pairingOverlay}>
+          <ActivityIndicator size="large" color="#fff" />
+        </View>
       )}
     </View>
   );
@@ -191,5 +206,11 @@ const styles = StyleSheet.create({
   deviceListContentContainerStyle: {
     paddingHorizontal: 10,
     paddingTop: 10
+  },
+  pairingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

@@ -74,18 +74,25 @@ export default function LEDScreen() {
 
 
   useEffect(() => {
-    //Turn off the LED
-    const base64Color = colorHexToRGBWUint32LE('#000000');
-    writeWithResponse(
-      LED_UUIDS.SERVICE_UUID,
-      LED_UUIDS.COLOR_CHAR,
-      base64Color
-    );
-    const interval = setInterval(() => {
-      setLoading(false);
-    }, 1000);
+    let isMounted = true;
+    // Turn off the LED before clearing the loading state.
+    (async () => {
+      try {
+        const base64Color = colorHexToRGBWUint32LE('#000000');
+        await writeWithResponse(
+          LED_UUIDS.SERVICE_UUID,
+          LED_UUIDS.COLOR_CHAR,
+          base64Color
+        );
+      } finally {
+        if (isMounted) {
+          setIsLEDOn(false);
+          setLoading(false);
+        }
+      }
+    })();
     return () => {
-      clearInterval(interval);
+      isMounted = false;
     };
   }, []);
 
