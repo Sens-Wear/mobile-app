@@ -1,5 +1,6 @@
 import { Alert, StyleSheet, Image, Pressable, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useNavigation } from '@react-navigation/native';
 
 import { ExternalLink } from '@/components/ExternalLink';
 import ParallaxScrollView from '@/components/ParallaxScrollView';
@@ -9,6 +10,7 @@ import { useBle } from '@/hooks/BleSessionProvider';
 
 export default function TabTwoScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const { forget } = useBle();
 
   const settingsItems = [
@@ -31,7 +33,15 @@ export default function TabTwoScreen() {
           style: 'destructive',
           onPress: async () => {
             await forget();
-            router.replace('/');
+            const parentNavigation = navigation.getParent();
+            if (parentNavigation) {
+              parentNavigation.reset({
+                index: 0,
+                routes: [{ name: 'index' as never }],
+              });
+            } else {
+              router.replace('/');
+            }
           },
         },
       ],

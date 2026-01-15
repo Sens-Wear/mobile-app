@@ -90,19 +90,19 @@ export default function DevicesScreen() {
     return false
   }
 
-  const handleBack = () => {
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-    } else {
-      router.replace('/'); // or wherever your "home" screen is
-    }
-  };
-
   const handleSelectDevice = async (device) => {
     setIsPairing(true);
     var ret = await pair(device.id);
     if (ret) {
-      router.push({ pathname: '/sensors', params: { deviceId: device.id } });
+      navigation.reset({
+        index: 0,
+        routes: [
+          {
+            name: '(tabs)' as never,
+            params: { screen: 'sensors', params: { deviceId: device.id } },
+          } as never,
+        ],
+      });
       return;
     }
     setIsPairing(false);
