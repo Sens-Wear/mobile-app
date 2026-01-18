@@ -131,6 +131,19 @@ export function useBleSession() {
     return sub;
   }, [state.deviceId]);
 
+  const readCharacteristic = useCallback(async (
+    serviceUUID: string,
+    characteristicUUID: string
+  ) => {
+    if (!state.deviceId) throw new Error('No connected device');
+
+    return bleManager.readCharacteristicForDevice(
+      state.deviceId,
+      serviceUUID,
+      characteristicUUID
+    );
+  }, [state.deviceId]);
+
   const writeWithResponse = useCallback(async (
     serviceUUID: string,
     characteristicUUID: string,
@@ -226,6 +239,7 @@ export function useBleSession() {
     getServices,
     getCharacteristics,
     monitor,
+    readCharacteristic,
     writeWithResponse,
     writeWithoutResponse,
     pair,
@@ -238,6 +252,7 @@ export function useBleSession() {
     getServices,
     getCharacteristics,
     monitor,
+    readCharacteristic,
     writeWithResponse,
     writeWithoutResponse,
     pair,

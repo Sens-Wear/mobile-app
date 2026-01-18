@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Image } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import * as Progress from 'react-native-progress';
 
 const sensors = [
   { id: '1', name: 'PPG', icon: require('@/assets/images/dashboard_icons/heart_rate.png'), link: '/ppg' },
@@ -14,7 +14,13 @@ const sensors = [
 
 export default function SensorsScreen() {
   const router = useRouter();
-  const batteryLevel = 85; // Example static battery percentage
+  const batteryStatus = {
+    level: 0.20,
+    status: 'charging',
+    statusCircleColor: 'rgba(0, 14, 213, 1)',
+    // statusCircleColor: 'rgba(0, 122, 59, 1)',
+    // statusCircleColor: 'rgba(122, 0, 0, 1)',
+  };
 
   const handleSelectSensor = (pathName) => {
     router.push({ pathname: pathName });
@@ -30,8 +36,16 @@ export default function SensorsScreen() {
         </View>
 
         <View style={styles.headerRight}>
-          <Ionicons name="battery-half" size={20} color="black" style={{ marginRight: 4 }} />
-          <Text style={styles.batteryText}>{batteryLevel}%</Text>
+          <Progress.Circle
+            size={30}
+            indeterminate={false}
+            progress={batteryStatus.level}
+            showsText={true}
+            textStyle={{fontSize: 15}}
+            thickness={2}
+            color={batteryStatus.statusCircleColor}
+            formatText= {progress => `⚡︎`}
+          />
         </View>
       </View>
 

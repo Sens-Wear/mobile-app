@@ -8,3 +8,9 @@ export const IMU_UUIDS = {
   QUATERNION_CHAR: '7d2b6c11-9d78-4f3c-a122-6d2c4e6d2a11',
   ACCELEROMETER_CHAR: '7d2b6c12-9d78-4f3c-a122-6d2c4e6d2a11',
 };
+
+export const POWER_UUIDS = {
+  SERVICE_UUID: '8f9a1c20-84e7-4a73-9a57-6f6d5d0ab1c2',
+  CHARGER_CHAR: '8f9a1c21-84e7-4a73-9a57-6f6d5d0ab1c2',
+  GAUGE_CHAR: '8f9a1c22-84e7-4a73-9a57-6f6d5d0ab1c2',
+};
