@@ -1,100 +1,205 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from "react-native-gifted-charts";
 import { Dimensions } from 'react-native';
-import Legend from '../../components/ui/Legend';
+import Legend from '@/components/ui/Legend';
+import { decode as b64decode } from 'base-64';
+import { PPG_UUIDS } from '@/ble/bleConstants';
+import { useBle } from '@/hooks/BleSessionProvider';
 
 
 
 const MAX_LENGTH = 100; // Maximum number of items to keep in the chart
+const BUFFER_LIMIT = 500; // Prevent unbounded growth if UI updates are delayed
 
 export default function DevicesScreen() {
-  const [heartRateData, setHeartRateData] = useState([]);
-  const [rawData, setRawdata] = useState({
-    red: [],
-    green: [],
-    ir: [],
-  });
+  const { monitor } = useBle();
+  const [rawRedData, setRawRedData] = useState([]);
+  const [rawIRData, setRawIRData] = useState([]);
+  const [rawGreenData, setRawGreenData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const navigation = useNavigation();
+  const lastRedScrollRef = useRef(0);
+  const lastIRScrollRef = useRef(0);
+  const lastGreenScrollRef = useRef(0);
   const router = useRouter();
-  const heartRateChartRef = useRef(null)
-  const rawDataChartRef = useRef(null)
-
-  const handleBack = () => {
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-    } else {
-      router.replace('/'); // or wherever your "home" screen is
+  const rawRedDataChartRef = useRef(null)
+  const rawIRDataChartRef = useRef(null)
+  const rawGreenDataChartRef = useRef(null)
+  const rawGreenBufferRef = useRef<{ green: number }[]>([]);
+  const rawRedBufferRef = useRef<{ red: number }[]>([]);
+  const rawIRBufferRef = useRef<{ ir: number }[]>([]);
+  const getPaddedRange = (data: { value: number }[]) => {
+    if (!data || data.length === 0) return undefined;
+    let min = data[0].value;
+    let max = data[0].value;
+    for (const point of data) {
+      if (point.value < min) min = point.value;
+      if (point.value > max) max = point.value;
     }
+    const range = max - min;
+    const padding = range > 0 ? range * 0.1 : Math.max(Math.abs(max) * 0.05, 1);
+    const paddedMin = min - padding;
+    const paddedMax = max + padding;
+    return {
+      min: min <= 0 ? Math.min(0, paddedMin) : paddedMin,
+      max: paddedMax,
+    };
   };
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setRawdata(prevData => {
-        const updatedData = {
-          red: [...prevData.red, {
-            value: Math.floor(Math.random() * 100),
-            label: `${prevData.red.length + 1}`
-          }],
-          green: [...prevData.green, {
-            value: Math.floor(Math.random() * 100),
-            label: `${prevData.green.length + 1}`
-          }],
-          ir: [...prevData.ir, {
-            value: Math.floor(Math.random() * 100),
-            label: `${prevData.ir.length + 1}`
-          }],
+  const redRange = useMemo(() => getPaddedRange(rawRedData), [rawRedData]);
+  const irRange = useMemo(() => getPaddedRange(rawIRData), [rawIRData]);
+  const greenRange = useMemo(() => getPaddedRange(rawGreenData), [rawGreenData]);
+
+  function base64ToBytes(base64: string) {
+    const binary = b64decode(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  function readInt32LE(bytes: Uint8Array, offset: number) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return view.getInt32(offset, true);
+  }
+
+  useFocusEffect(
+      React.useCallback(() => {
+        const redSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.RED_CHANNEL_CHAR, (c) => {
+          const v = c.value;
+          if (!v) return;
+          const bytes = base64ToBytes(v);
+          if (bytes.length < 4) return;
+          let dataToPush = {
+            red: readInt32LE(bytes, 0),
+          };
+          rawRedBufferRef.current.push(dataToPush);
+          if (rawRedBufferRef.current.length > BUFFER_LIMIT) {
+            rawRedBufferRef.current.splice(0, rawRedBufferRef.current.length - BUFFER_LIMIT);
+          }
+        }, (e) => {
+          console.log(e)
+        });
+  
+        const irSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.IR_CHANNEL_CHAR, (c) => {
+          const v = c.value;
+          if (!v) return;
+          const bytes = base64ToBytes(v);
+          if (bytes.length < 4) return;
+          let dataToPush = {
+            ir: readInt32LE(bytes, 0),
+          };
+          rawIRBufferRef.current.push(dataToPush);
+          if (rawIRBufferRef.current.length > BUFFER_LIMIT) {
+            rawIRBufferRef.current.splice(0, rawIRBufferRef.current.length - BUFFER_LIMIT);
+          }
+        }, (e) => {
+          console.log(e)
+        });
+
+        const greenSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.GREEN_CHANNEL_CHAR, (c) => {
+          const v = c.value;
+          if (!v) return;
+          const bytes = base64ToBytes(v);
+          if (bytes.length < 4) return;
+          let dataToPush = {
+            green: readInt32LE(bytes, 0),
+          };
+          rawGreenBufferRef.current.push(dataToPush);
+          if (rawGreenBufferRef.current.length > BUFFER_LIMIT) {
+            rawGreenBufferRef.current.splice(0, rawGreenBufferRef.current.length - BUFFER_LIMIT);
+          }
+        }, (e) => {
+          console.log(e)
+        });
+        
+        const interval = setInterval(() => {
+          const redBatch = rawRedBufferRef.current.splice(0);
+          const irBatch = rawIRBufferRef.current.splice(0);
+          const greenBatch = rawGreenBufferRef.current.splice(0);
+          if (redBatch.length === 0 && irBatch.length === 0 && greenBatch.length == 0) return;
+  
+          if (redBatch.length > 0) {
+            setRawRedData(prevData => {
+              const red = [...prevData];
+              for (const sample of redBatch) {
+                red.push({ value: sample.red });
+              }
+
+              return red.slice(-MAX_LENGTH);
+            });
+          }
+
+          if (irBatch.length > 0) {
+            setRawIRData(prevData => {
+              const ir = [...prevData];
+              for (const sample of irBatch) {
+                ir.push({ value: sample.ir });
+              }
+
+              return ir.slice(-MAX_LENGTH);
+            });
+          }
+
+          if (greenBatch.length > 0) {
+            setRawGreenData(prevData => {
+              const green = [...prevData];
+              for (const sample of greenBatch) {
+                green.push({ value: sample.green });
+              }
+              return green.slice(-MAX_LENGTH);
+            });
+          }
+          if (loading) {
+            setLoading(false);
+          }
+        }, 500);
+  
+        return () => {
+          redSub.remove();
+          irSub.remove();
+          greenSub.remove();
+          clearInterval(interval);
+          rawRedBufferRef.current = [];
+          rawIRBufferRef.current = [];
+          rawGreenBufferRef.current = [];
         };
-        // Trim older items if the new list is longer than MAX_LENGTH
-        if (updatedData.red.length > MAX_LENGTH) {
-          updatedData.red = updatedData.red.slice(updatedData.red.length - MAX_LENGTH);
-          updatedData.green = updatedData.green.slice(updatedData.green.length - MAX_LENGTH);
-          updatedData.ir = updatedData.ir.slice(updatedData.ir.length - MAX_LENGTH);
-        }
-        return updatedData;
-      });
-      setLoading(false);
-    }, 1000);
-    return () => {
-      clearInterval(interval);
-    };
-  }, []);
+      }, [monitor])
+    );
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setHeartRateData(prevData => {
-        const updatedData = [...prevData, {
-          value: Math.floor(Math.random() * 100), // Random value for demonstration
-          label: `${prevData.length + 1}`
-        }];
-        // Trim older items if the new list is longer than MAX_LENGTH
-        if (updatedData.length > MAX_LENGTH) {
-          return updatedData.slice(updatedData.length - MAX_LENGTH);
-        }
-        return updatedData;
-      });
-      setLoading(false);
-    }, 1000);
-    return () => {
-      clearInterval(interval);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (heartRateChartRef.current) {
-      heartRateChartRef.current.scrollToEnd({ animated: true });
+    if (rawRedDataChartRef.current) {
+      const now = Date.now();
+      if (now - lastRedScrollRef.current > 400) {
+        rawRedDataChartRef.current.scrollToEnd({ animated: false });
+        lastRedScrollRef.current = now;
+      }
     }
-  }, [heartRateData]);
+  }, [rawRedData]);
 
   useEffect(() => {
-    if (rawDataChartRef.current) {
-      rawDataChartRef.current.scrollToEnd({ animated: true });
+    if (rawIRDataChartRef.current) {
+      const now = Date.now();
+      if (now - lastIRScrollRef.current > 400) {
+        rawIRDataChartRef.current.scrollToEnd({ animated: false });
+        lastIRScrollRef.current = now;
+      }
     }
-  }, [rawData]);
+  }, [rawIRData]);
+
+  useEffect(() => {
+    if (rawGreenDataChartRef.current) {
+      const now = Date.now();
+      if (now - lastGreenScrollRef.current > 400) {
+        rawGreenDataChartRef.current.scrollToEnd({ animated: false });
+        lastGreenScrollRef.current = now;
+      }
+    }
+  }, [rawGreenData]);
 
 
   return (
@@ -120,47 +225,80 @@ export default function DevicesScreen() {
           <View style={styles.dividerContainer}>
             <View style={styles.dividerLeftSideLine} />
             <View>
-              <Text style={styles.dividerText}>Heart Rate</Text>
+              <Text style={styles.dividerText}>Red Channel</Text>
             </View>
             <View style={styles.dividerRightSideLine} />
           </View>
+          <Legend
+            items={[
+              { label: 'Red', color: 'red' },
+            ]}
+          />
           <LineChart
-            scrollRef={heartRateChartRef}
+            scrollRef={rawRedDataChartRef}
             width={Dimensions.get('window').width - 70}
+            showScrollIndicator={true}
             hideDataPoints
+            isAnimated={false}
+            interpolateMissingValues={false}
             initialSpacing={0}
             endSpacing={0}
-            data={heartRateData}
-            color='green'
-            curved
+            spacing={30}
+            data={rawRedData}
+            color1="red"
+            yAxisOffset={redRange?.min}
           />
           <View style={styles.dividerContainer}>
             <View style={styles.dividerLeftSideLine} />
             <View>
-              <Text style={styles.dividerText}>Raw Data</Text>
+              <Text style={styles.dividerText}>IR Channel</Text>
+            </View>
+            <View style={styles.dividerRightSideLine} />
+          </View>
+          <Legend
+            items={[
+              { label: 'IR', color: 'black' },
+            ]}
+          />
+          <LineChart
+            scrollRef={rawIRDataChartRef}
+            width={Dimensions.get('window').width - 70}
+            showScrollIndicator={true}
+            hideDataPoints
+            isAnimated={false}
+            interpolateMissingValues={false}
+            initialSpacing={0}
+            endSpacing={0}
+            spacing={30}
+            data={rawIRData}
+            color1="black"
+            yAxisOffset={irRange?.min}
+          />
+          <View style={styles.dividerContainer}>
+            <View style={styles.dividerLeftSideLine} />
+            <View>
+              <Text style={styles.dividerText}>Green Channel</Text>
             </View>
             <View style={styles.dividerRightSideLine} />
           </View>
           <Legend
             items={[
               { label: 'Green', color: 'lime' },
-              { label: 'Red', color: 'red' },
-              { label: 'IR', color: 'black' },
             ]}
           />
           <LineChart
-            scrollRef={rawDataChartRef}
+            scrollRef={rawGreenDataChartRef}
             width={Dimensions.get('window').width - 70}
+            showScrollIndicator={true}
             hideDataPoints
+            isAnimated={false}
+            interpolateMissingValues={false}
             initialSpacing={0}
             endSpacing={0}
-            data={rawData.red}
-            data2={rawData.green}
-            data3={rawData.ir}
-            color1="red"
-            color2="green"
-            color3="black"
-            curved
+            spacing={30}
+            data={rawGreenData}
+            color1="lime"
+            yAxisOffset={greenRange?.min}
           />
         </ScrollView>
       )}

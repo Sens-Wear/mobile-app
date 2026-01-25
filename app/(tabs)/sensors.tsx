@@ -1,7 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, FlatList, Image } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import * as Progress from 'react-native-progress';
+import { decode as b64decode } from 'base-64';
+import { useBle } from '@/hooks/BleSessionProvider';
+import { POWER_UUIDS } from '@/ble/bleConstants';
 
 const sensors = [
   { id: '1', name: 'PPG', icon: require('@/assets/images/dashboard_icons/heart_rate.png'), link: '/ppg' },
@@ -13,14 +17,130 @@ const sensors = [
 ];
 
 export default function SensorsScreen() {
+  const [gaugeInfo, setGaugeInfo] = useState({
+    state_of_charge_cdec: -1,
+  });
+  const [chargerInfo, setChargerInfo] = useState({
+          bCharging: false,
+  });
+  const { monitor, readCharacteristic, isConnected } = useBle();
   const router = useRouter();
-  const batteryStatus = {
-    level: 0.20,
-    status: 'charging',
-    statusCircleColor: 'rgba(0, 14, 213, 1)',
-    // statusCircleColor: 'rgba(0, 122, 59, 1)',
-    // statusCircleColor: 'rgba(122, 0, 0, 1)',
+  function base64ToBytes(base64: string) {
+    const binary = b64decode(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+  const batteryStatusColors = () => {
+    if (chargerInfo.bCharging) {
+      return 'rgba(0, 14, 213, 1)';
+    }
+    if (gaugeInfo.state_of_charge_cdec < 300) {
+      return 'rgba(122, 0, 0, 1)';
+    }
+    return 'rgba(0, 122, 59, 1)';
   };
+
+  const progressFunction = (progress) => {
+    if (chargerInfo.bCharging) {
+      return `⚡︎`;
+    }
+    return Math.floor(progress * 100) + '%';
+  };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!isConnected) {
+        return () => {};
+      }
+
+      let isChargerActive = true;
+      let isGaugeActive = true;
+      const handleChargerUpdate = (c: { value: string | null }) => {
+        const v = c.value;
+        if (!v) return;
+        const bytes = base64ToBytes(v);
+        if (bytes.length < 4) return;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const flags = view.getUint32(0, true);
+        setChargerInfo({
+          bCharging: !!(flags & (1 << 6)),
+        });
+      };
+
+      const readChargerInitial = async () => {
+        try {
+          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.CHARGER_CHAR);
+          if (isChargerActive && c) handleChargerUpdate(c);
+        } catch (e) {
+          console.log(e);
+        }
+      };
+
+      readChargerInitial();
+
+      const chargerSub = monitor(
+        POWER_UUIDS.SERVICE_UUID,
+        POWER_UUIDS.CHARGER_CHAR,
+        handleChargerUpdate,
+        (e) => {
+          console.log(e);
+        }
+      );
+
+      const handleGaugeUpdate = (c: { value: string | null }) => {
+        const v = c.value;
+        if (!v) return;
+        const bytes = base64ToBytes(v);
+        if (bytes.length < 16) return null;
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        let o = 0;
+
+        const i16 = () => { const v = view.getInt16(o, true); o += 2; return v; };
+        const u16 = () => { const v = view.getUint16(o, true); o += 2; return v; };
+        const temperature_cdec = i16();
+        const voltage_mv = u16();
+        const average_current_ma = i16();
+        const average_power_mw = i16();
+        const state_of_charge_cdec = u16();
+        const nominal_available_capacity_mah = u16();
+        const full_battery_capacity_mah = u16();
+        const remaining_capacity_mah = u16();
+        setGaugeInfo({
+          state_of_charge_cdec,
+        });
+      };
+
+      const readGaugeInitial = async () => {
+        try {
+          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.GAUGE_CHAR);
+          if (isGaugeActive && c) handleGaugeUpdate(c);
+        } catch (e) {
+          console.log(e);
+        }
+      };
+
+      readGaugeInitial();
+
+      const gaugeSub = monitor(
+        POWER_UUIDS.SERVICE_UUID,
+        POWER_UUIDS.GAUGE_CHAR,
+        handleGaugeUpdate,
+        (e) => {
+          console.log(e);
+        }
+      );
+
+      return () => {
+        isChargerActive = false;
+        isGaugeActive = false;
+        chargerSub.remove();
+        gaugeSub.remove();
+      };
+    }, [isConnected, monitor, readCharacteristic])
+  );
 
   const handleSelectSensor = (pathName) => {
     router.push({ pathname: pathName });
@@ -39,12 +159,12 @@ export default function SensorsScreen() {
           <Progress.Circle
             size={30}
             indeterminate={false}
-            progress={batteryStatus.level}
+            progress={gaugeInfo.state_of_charge_cdec / 1000}
+            textStyle={{fontSize: chargerInfo.bCharging ? 15 : 9}}
             showsText={true}
-            textStyle={{fontSize: 15}}
             thickness={2}
-            color={batteryStatus.statusCircleColor}
-            formatText= {progress => `⚡︎`}
+            color={batteryStatusColors()}
+            formatText= {progressFunction}
           />
         </View>
       </View>

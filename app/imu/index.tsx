@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from "react-native-gifted-charts";
 import { Dimensions } from 'react-native';
+import Legend from '@/components/ui/Legend';
 import { decode as b64decode } from 'base-64';
 import { IMU_UUIDS } from '@/ble/bleConstants';
-import Legend from '@/components/ui/Legend';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { IMU_CONSTANTS } from '@/constants/SensorConstants';
 
@@ -30,10 +30,10 @@ export default function DevicesScreen() {
     w: [],
   });
   const [loading, setLoading] = useState(true);
-  const navigation = useNavigation();
   const router = useRouter();
   const accChartRef = useRef(null)
   const gyroDataChartRef = useRef(null)
+  const lastScrollRef = useRef(0);
   const accBufferRef = useRef<{ x: number; y: number; z: number }[]>([]);
   const gyroBufferRef = useRef<{ x: number; y: number; z: number; w: number }[]>([]);
 
@@ -132,8 +132,10 @@ export default function DevicesScreen() {
             };
           });
         }
-        setLoading(false);
-      }, 1000);
+        if (loading) {
+          setLoading(false);
+        }
+      }, 500);
 
       return () => {
         accSub.remove();
@@ -147,13 +149,21 @@ export default function DevicesScreen() {
 
   useEffect(() => {
     if (accChartRef.current) {
-      accChartRef.current.scrollToEnd({ animated: true });
+      const now = Date.now();
+      if (now - lastScrollRef.current > 400) {
+        accChartRef.current.scrollToEnd({ animated: false });
+        lastScrollRef.current = now;
+      }
     }
   }, [accData]);
 
   useEffect(() => {
     if (gyroDataChartRef.current) {
-      gyroDataChartRef.current.scrollToEnd({ animated: true });
+      const now = Date.now();
+      if (now - lastScrollRef.current > 400) {
+        gyroDataChartRef.current.scrollToEnd({ animated: false });
+        lastScrollRef.current = now;
+      }
     }
   }, [gyroData]);
 
@@ -195,11 +205,13 @@ export default function DevicesScreen() {
           <LineChart
             scrollRef={accChartRef}
             width={Dimensions.get('window').width - 70}
-            height={200}
             showScrollIndicator={true}
             hideDataPoints
+            isAnimated={false}
             initialSpacing={0}
             spacing={1}
+            maxValue={5000}
+            mostNegativeValue={-4000}
             endSpacing={0}
             data={accData.x}
             data2={accData.y}
@@ -207,7 +219,6 @@ export default function DevicesScreen() {
             color1="red"
             color2="green"
             color3="black"
-            curved
           />
           <View style={styles.dividerContainer}>
             <View style={styles.dividerLeftSideLine} />
@@ -228,8 +239,9 @@ export default function DevicesScreen() {
             scrollRef={gyroDataChartRef}
             width={Dimensions.get('window').width - 70}
             height={200}
+            isAnimated={false}
             showScrollIndicator={true}
-            maxValue={1}
+            maxValue={1.5}
             mostNegativeValue={-1}
             hideDataPoints
             spacing={1}
@@ -243,7 +255,6 @@ export default function DevicesScreen() {
             color2="green"
             color3="blue"
             color4="black"
-            curved
           />
         </ScrollView>
       )}
