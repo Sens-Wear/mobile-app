@@ -74,9 +74,32 @@ export default function DevicesScreen() {
     return bytes;
   }
 
-  function readInt32LE(bytes: Uint8Array, offset: number) {
+  function readUint32LE(bytes: Uint8Array, offset: number) {
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return view.getInt32(offset, true);
+    return view.getUint32(offset, true);
+  }
+
+  function readUint64LEAsNumber(bytes: Uint8Array, offset: number) {
+    const low = readUint32LE(bytes, offset);
+    const high = readUint32LE(bytes, offset + 4);
+    return high * 0x100000000 + low;
+  }
+
+  function parsePpgSampleBatchNotification(bytes: Uint8Array) {
+    const SAMPLE_SIZE_BYTES = 12;
+    const sampleCount = Math.floor(bytes.length / SAMPLE_SIZE_BYTES);
+    if (sampleCount === 0) return [];
+
+    const samples = [];
+    for (let i = 0; i < sampleCount; i += 1) {
+      const offset = i * SAMPLE_SIZE_BYTES;
+      // Firmware sends packed struct as little-endian: uint64 unix_ms + uint32 value.
+      samples.push({
+        unixMs: readUint64LEAsNumber(bytes, offset),
+        value: readUint32LE(bytes, offset + 8),
+      });
+    }
+    return samples;
   }
 
   useFocusEffect(
@@ -87,16 +110,15 @@ export default function DevicesScreen() {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
-          if (bytes.length < 4) return;
-          let dataToPush = {
-            red: readInt32LE(bytes, 0),
-          };
-          rawRedBufferRef.current.push(dataToPush);
+          const samples = parsePpgSampleBatchNotification(bytes);
+          if (samples.length === 0) return;
+          for (const sample of samples) {
+            rawRedBufferRef.current.push({ red: sample.value });
+            csvRowsRef.current.push(`${sample.unixMs},red,${sample.value}`);
+          }
           if (rawRedBufferRef.current.length > BUFFER_LIMIT) {
             rawRedBufferRef.current.splice(0, rawRedBufferRef.current.length - BUFFER_LIMIT);
           }
-          const ts = Date.now();
-          csvRowsRef.current.push(`${ts},red,${dataToPush.red}`);
         }, (e) => {
           console.log(e)
         });
@@ -105,16 +127,16 @@ export default function DevicesScreen() {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
-          if (bytes.length < 4) return;
-          let dataToPush = {
-            ir: readInt32LE(bytes, 0),
-          };
-          rawIRBufferRef.current.push(dataToPush);
+          const samples = parsePpgSampleBatchNotification(bytes);
+          if (samples.length === 0) return;
+          console.log(`Received IR batch with ${samples.length} samples, first sample value: ${samples[0].value}`);
+          for (const sample of samples) {
+            rawIRBufferRef.current.push({ ir: sample.value });
+            csvRowsRef.current.push(`${sample.unixMs},ir,${sample.value}`);
+          }
           if (rawIRBufferRef.current.length > BUFFER_LIMIT) {
             rawIRBufferRef.current.splice(0, rawIRBufferRef.current.length - BUFFER_LIMIT);
           }
-          const ts = Date.now();
-          csvRowsRef.current.push(`${ts},ir,${dataToPush.ir}`);
         }, (e) => {
           console.log(e)
         });
@@ -123,16 +145,15 @@ export default function DevicesScreen() {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
-          if (bytes.length < 4) return;
-          let dataToPush = {
-            green: readInt32LE(bytes, 0),
-          };
-          rawGreenBufferRef.current.push(dataToPush);
+          const samples = parsePpgSampleBatchNotification(bytes);
+          if (samples.length === 0) return;
+          for (const sample of samples) {
+            rawGreenBufferRef.current.push({ green: sample.value });
+            csvRowsRef.current.push(`${sample.unixMs},green,${sample.value}`);
+          }
           if (rawGreenBufferRef.current.length > BUFFER_LIMIT) {
             rawGreenBufferRef.current.splice(0, rawGreenBufferRef.current.length - BUFFER_LIMIT);
           }
-          const ts = Date.now();
-          csvRowsRef.current.push(`${ts},green,${dataToPush.green}`);
         }, (e) => {
           console.log(e)
         });

@@ -3,6 +3,7 @@ import { bleManager } from '../ble/bleManager';
 import type { Device, Subscription, Characteristic } from 'react-native-ble-plx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '@/constants/StorageKeys';
+import { Platform } from 'react-native';
 
 type BleSessionState = {
   deviceId: string | null;
@@ -35,10 +36,21 @@ export function useBleSession() {
 
     try {
       // Connect
-      const device = await bleManager.connectToDevice(deviceId, { timeout: 8000 });
+      let device = await bleManager.connectToDevice(deviceId, { timeout: 8000 });
 
       // Discover once (important)
       await device.discoverAllServicesAndCharacteristics();
+      
+      // Android only: request larger ATT MTU for bigger notification payloads.
+      // Negotiated value depends on peripheral + stack and can be lower than requested.
+      if (Platform.OS === 'android') {
+        try {
+          device = await device.requestMTU(512);
+          console.log('Negotiated MTU:', device.mtu);
+        } catch (mtuError) {
+          console.log('MTU request failed, continuing with default MTU', mtuError);
+        }
+      }
 
       // Remove any previous listeners/subscriptions
       clearMonitors();
