@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
 import { decode as b64decode } from 'base-64';
@@ -11,6 +12,7 @@ import { useBle } from '@/hooks/BleSessionProvider';
 
 const MAX_LENGTH = 100;
 const BUFFER_LIMIT = 100;
+const CHART_WIDTH = Dimensions.get('window').width - 80;
 
 type ChartPoint = { value: number };
 
@@ -23,9 +25,8 @@ export default function TemperatureScreen() {
   const lastScrollRef = useRef(0);
   const temperatureBufferRef = useRef<number[]>([]);
 
-  const currentTemperature = temperatureData.length > 0
-    ? temperatureData[temperatureData.length - 1].value
-    : null;
+  const currentTemperature =
+    temperatureData.length > 0 ? temperatureData[temperatureData.length - 1].value : null;
 
   const chartRange = useMemo(() => {
     if (temperatureData.length === 0) return undefined;
@@ -64,9 +65,8 @@ export default function TemperatureScreen() {
     const bytes = base64ToBytes(rawValue);
     if (bytes.length < 4) return null;
 
-    // Temperature notifications are sent as int32_t in deci-degrees Celsius.
-    let temperature = readInt32LE(bytes, 0) / 1000;
-    console.log(temperature)
+    const temperature = readInt32LE(bytes, 0) / 1000;
+    console.log(temperature);
     return temperature;
   }
 
@@ -156,132 +156,278 @@ export default function TemperatureScreen() {
     }
   }, [temperatureData]);
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerLeft}>
-          <Ionicons name="chevron-back" size={24} color="black" />
-        </TouchableOpacity>
+  const latestLabel = currentTemperature === null ? '--' : `${currentTemperature.toFixed(1)} °C`;
+  const trendSpread =
+    chartRange && currentTemperature !== null ? `${(chartRange.max - chartRange.min).toFixed(1)} °C range` : 'Awaiting samples';
 
-        <View style={styles.headerCenter}>
-          <Text style={styles.title}>Temperature</Text>
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <LinearGradient
+        colors={['#153B2E', '#356B59', '#D7C1A6']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroCard}>
+        <View style={styles.heroHeader}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
+            <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
+          </TouchableOpacity>
+
+          <View style={styles.heroIconWrap}>
+            <Ionicons name="thermometer-outline" size={20} color="#153B2E" />
+          </View>
         </View>
 
-        <View style={styles.headerRight} />
+        <Text style={styles.eyebrow}>Temperature live view</Text>
+        <Text style={styles.heroTitle}>Track live thermal readings from the connected device.</Text>
+        <Text style={styles.heroSubtitle}>
+          Monitor the latest sample and the rolling chart history using the same dashboard layout as
+          the other sensor pages.
+        </Text>
+
+        <View style={styles.heroMetaRow}>
+          <View style={styles.metaPill}>
+            <Ionicons name="pulse-outline" size={15} color="#153B2E" />
+            <Text style={styles.metaPillText}>Single channel</Text>
+          </View>
+          <View style={styles.metaPill}>
+            <Ionicons name="radio-outline" size={15} color="#153B2E" />
+            <Text style={styles.metaPillText}>{loading ? 'Waiting for data' : 'Streaming'}</Text>
+          </View>
+        </View>
+      </LinearGradient>
+
+      <View style={styles.summaryRow}>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>Current reading</Text>
+          <Text style={styles.summaryValue}>{latestLabel}</Text>
+          <Text style={styles.summaryHint}>Latest decoded temperature notification.</Text>
+        </View>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>Observed spread</Text>
+          <Text style={styles.summaryValue}>{trendSpread}</Text>
+          <Text style={styles.summaryHint}>Calculated from the values visible in the chart.</Text>
+        </View>
       </View>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#000" />
+        <View style={styles.loadingCard}>
+          <ActivityIndicator size="large" color="#153B2E" />
+          <Text style={styles.loadingTitle}>Waiting for temperature packets</Text>
+          <Text style={styles.loadingText}>The chart will populate as soon as thermal samples arrive.</Text>
+        </View>
       ) : (
-        <ScrollView style={styles.mainContainer}>
-          <View style={styles.currentValueCard}>
-            <Text style={styles.currentValueLabel}>Current reading</Text>
-            <Text style={styles.currentValueText}>
-              {currentTemperature === null ? '--' : `${currentTemperature.toFixed(1)} °C`}
-            </Text>
-          </View>
-
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerSideLine} />
+        <View style={styles.sectionCard}>
+          <View style={styles.sectionHeader}>
             <View>
-              <Text style={styles.dividerText}>Temperature Chart</Text>
+              <Text style={styles.sectionTitle}>Temperature chart</Text>
+              <Text style={styles.sectionCaption}>
+                Live rolling temperature history with an automatically padded chart range.
+              </Text>
             </View>
-            <View style={styles.dividerSideLine} />
+            <View style={styles.sectionBadge}>
+              <Text style={styles.sectionBadgeText}>THERMAL</Text>
+            </View>
           </View>
 
-          <Legend
-            items={[
-              { label: 'Temperature', color: '#e67e22' },
-            ]}
-          />
+          <Legend items={[{ label: 'Temperature', color: '#e67e22' }]} />
 
-          <LineChart
-            scrollRef={chartRef}
-            width={Dimensions.get('window').width - 70}
-            height={220}
-            showScrollIndicator
-            hideDataPoints
-            isAnimated={false}
-            initialSpacing={0}
-            endSpacing={0}
-            spacing={10}
-            data={temperatureData}
-            color1="#e67e22"
-            yAxisOffset={chartRange?.min}
-            maxValue={chartRange ? chartRange.max - chartRange.min : undefined}
-          />
-        </ScrollView>
+          <View style={styles.chartWrap}>
+            <LineChart
+              scrollRef={chartRef}
+              width={CHART_WIDTH}
+              height={220}
+              showScrollIndicator
+              hideDataPoints
+              isAnimated={false}
+              initialSpacing={0}
+              endSpacing={0}
+              spacing={10}
+              data={temperatureData}
+              color1="#e67e22"
+              yAxisOffset={chartRange?.min}
+              maxValue={chartRange ? chartRange.max - chartRange.min : undefined}
+            />
+          </View>
+        </View>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#F5EFE8',
+  },
+  content: {
     paddingTop: 50,
-    backgroundColor: '#fff',
+    paddingHorizontal: 18,
+    paddingBottom: 32,
   },
-  mainContainer: {
-    paddingHorizontal: 20,
+  heroCard: {
+    borderRadius: 28,
+    padding: 22,
+    shadowColor: '#153B2E',
+    shadowOpacity: 0.16,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   },
-  header: {
+  heroHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  headerLeft: {
-    width: 40,
+  iconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'flex-start',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
-  headerCenter: {
-    flex: 1,
+  heroIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F1E3D2',
   },
-  headerRight: {
-    width: 40,
+  eyebrow: {
+    color: '#F6ECE0',
+    fontSize: 13,
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
+  heroTitle: {
+    color: '#FDF9F4',
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
+    maxWidth: '92%',
+    marginTop: 8,
   },
-  currentValueCard: {
-    marginTop: 20,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: '#f6f6f6',
-    alignItems: 'center',
+  heroSubtitle: {
+    color: '#F3E8DD',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 12,
+    maxWidth: '92%',
   },
-  currentValueLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
+  heroMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 18,
   },
-  currentValueText: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#111',
-  },
-  dividerContainer: {
+  metaPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 24,
+    gap: 8,
+    backgroundColor: '#F1E3D2',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
   },
-  dividerSideLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: 'black',
+  metaPillText: {
+    color: '#153B2E',
+    fontSize: 13,
+    fontWeight: '700',
   },
-  dividerText: {
-    width: 140,
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 18,
+  },
+  summaryCard: {
+    width: '48%',
+    backgroundColor: '#FFF9F2',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    padding: 16,
+  },
+  summaryLabel: {
+    color: '#68736D',
+    fontSize: 12,
+  },
+  summaryValue: {
+    color: '#14251F',
+    fontSize: 19,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  summaryHint: {
+    color: '#5F6B65',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  loadingCard: {
+    marginTop: 18,
+    backgroundColor: '#FFF9F2',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    paddingHorizontal: 18,
+    paddingVertical: 26,
+    alignItems: 'center',
+  },
+  loadingTitle: {
+    color: '#14251F',
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: 14,
+  },
+  loadingText: {
+    color: '#5F6B65',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
     textAlign: 'center',
-    fontSize: 15,
+  },
+  sectionCard: {
+    marginTop: 18,
+    backgroundColor: '#FFF9F2',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    padding: 18,
+    overflow: 'hidden',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  sectionTitle: {
+    color: '#14251F',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  sectionCaption: {
+    color: '#5F6B65',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 4,
+    maxWidth: 240,
+  },
+  sectionBadge: {
+    backgroundColor: '#F1E3D2',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  sectionBadgeText: {
+    color: '#153B2E',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  chartWrap: {
+    marginTop: 6,
+    marginHorizontal: -6,
   },
 });

@@ -1,30 +1,79 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, Image } from 'react-native';
+import {
+  FlatList,
+  Image,
+  Linking,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
 import * as Progress from 'react-native-progress';
 import { decode as b64decode } from 'base-64';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { POWER_UUIDS } from '@/ble/bleConstants';
 
 const sensors = [
-  { id: '1', name: 'PPG', icon: require('@/assets/images/dashboard_icons/heart_rate.png'), link: '/ppg' },
-  { id: '2', name: 'IMU', icon: require('@/assets/images/dashboard_icons/imu.png'), link: '/imu' },
-  { id: '3', name: 'Temperature', icon: require('@/assets/images/dashboard_icons/temperature.png'), link: '/temperature' },
-  { id: '4', name: 'Touch', icon: require('@/assets/images/dashboard_icons/touch.png'), link: '/touch' },
-  { id: '5', name: 'LED', icon: require('@/assets/images/dashboard_icons/led.png'), link: '/led' },
-  { id: '6', name: 'Vibration', icon: require('@/assets/images/dashboard_icons/vibration.png'), link: '/vibration' },
+  {
+    id: '1',
+    name: 'PPG',
+    description: 'Heart-rate signal and pulse trends',
+    icon: require('@/assets/images/dashboard_icons/heart_rate.png'),
+    link: '/ppg',
+  },
+  {
+    id: '2',
+    name: 'IMU',
+    description: 'Motion, posture and movement data',
+    icon: require('@/assets/images/dashboard_icons/imu.png'),
+    link: '/imu',
+  },
+  {
+    id: '3',
+    name: 'Temperature',
+    description: 'Body and ambient temperature checks',
+    icon: require('@/assets/images/dashboard_icons/temperature.png'),
+    link: '/temperature',
+  },
+  {
+    id: '4',
+    name: 'Touch',
+    description: 'Touch sensing and interaction events',
+    icon: require('@/assets/images/dashboard_icons/touch.png'),
+    link: '/touch',
+  },
+  {
+    id: '5',
+    name: 'LED',
+    description: 'Light patterns and visual feedback',
+    icon: require('@/assets/images/dashboard_icons/led.png'),
+    link: '/led',
+  },
+  {
+    id: '6',
+    name: 'Vibration',
+    description: 'Haptic feedback and motor control',
+    icon: require('@/assets/images/dashboard_icons/vibration.png'),
+    link: '/vibration',
+  },
 ];
+
+const WEBSITE_URL = 'https://sens-wear.com';
 
 export default function SensorsScreen() {
   const [gaugeInfo, setGaugeInfo] = useState({
     state_of_charge_cdec: -1,
   });
   const [chargerInfo, setChargerInfo] = useState({
-          bCharging: false,
+    bCharging: false,
   });
   const { monitor, readCharacteristic, isConnected } = useBle();
   const router = useRouter();
+
   function base64ToBytes(base64: string) {
     const binary = b64decode(base64);
     const bytes = new Uint8Array(binary.length);
@@ -33,21 +82,22 @@ export default function SensorsScreen() {
     }
     return bytes;
   }
+
   const batteryStatusColors = () => {
     if (chargerInfo.bCharging) {
-      return 'rgba(0, 14, 213, 1)';
+      return '#305CDE';
     }
     if (gaugeInfo.state_of_charge_cdec < 300) {
-      return 'rgba(122, 0, 0, 1)';
+      return '#AF2B1E';
     }
-    return 'rgba(0, 122, 59, 1)';
+    return '#1C7C54';
   };
 
-  const progressFunction = (progress) => {
+  const progressFunction = (progress: number) => {
     if (chargerInfo.bCharging) {
-      return `⚡︎`;
+      return 'CHG';
     }
-    return Math.floor(progress * 100) + '%';
+    return `${Math.max(0, Math.floor(progress * 100))}%`;
   };
 
   useFocusEffect(
@@ -58,6 +108,7 @@ export default function SensorsScreen() {
 
       let isChargerActive = true;
       let isGaugeActive = true;
+
       const handleChargerUpdate = (c: { value: string | null }) => {
         const v = c.value;
         if (!v) return;
@@ -94,20 +145,30 @@ export default function SensorsScreen() {
         const v = c.value;
         if (!v) return;
         const bytes = base64ToBytes(v);
-        if (bytes.length < 16) return null;
+        if (bytes.length < 16) return;
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         let o = 0;
 
-        const i16 = () => { const v = view.getInt16(o, true); o += 2; return v; };
-        const u16 = () => { const v = view.getUint16(o, true); o += 2; return v; };
-        const temperature_cdec = i16();
-        const voltage_mv = u16();
-        const average_current_ma = i16();
-        const average_power_mw = i16();
+        const i16 = () => {
+          const value = view.getInt16(o, true);
+          o += 2;
+          return value;
+        };
+        const u16 = () => {
+          const value = view.getUint16(o, true);
+          o += 2;
+          return value;
+        };
+
+        i16();
+        u16();
+        i16();
+        i16();
         const state_of_charge_cdec = u16();
-        const nominal_available_capacity_mah = u16();
-        const full_battery_capacity_mah = u16();
-        const remaining_capacity_mah = u16();
+        u16();
+        u16();
+        u16();
+
         setGaugeInfo({
           state_of_charge_cdec,
         });
@@ -142,43 +203,122 @@ export default function SensorsScreen() {
     }, [isConnected, monitor, readCharacteristic])
   );
 
-  const handleSelectSensor = (pathName) => {
-    router.push({ pathname: pathName });
+  const handleSelectSensor = (pathName: string) => {
+    router.push({ pathname: pathName as never });
   };
+
+  const handleOpenWebsite = async () => {
+    await Linking.openURL(WEBSITE_URL);
+  };
+
+  const batteryProgress =
+    gaugeInfo.state_of_charge_cdec > -1
+      ? Math.min(1, Math.max(0, gaugeInfo.state_of_charge_cdec / 1000))
+      : 0;
+  const batteryLabel =
+    gaugeInfo.state_of_charge_cdec > -1
+      ? `${Math.floor(gaugeInfo.state_of_charge_cdec / 10)}% battery`
+      : 'Battery status pending';
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}></View>
-        <View style={styles.headerCenter}>
-          <Image source={require('@/assets/images/logo.jpg')} style={styles.logo} resizeMode="contain" />
-        </View>
-
-        <View style={styles.headerRight}>
-          <Progress.Circle
-            size={30}
-            indeterminate={false}
-            progress={gaugeInfo.state_of_charge_cdec / 1000}
-            textStyle={{fontSize: chargerInfo.bCharging ? 15 : 9}}
-            showsText={true}
-            thickness={2}
-            color={batteryStatusColors()}
-            formatText= {progressFunction}
-          />
-        </View>
-      </View>
-
-      {/* Sensor List */}
       <FlatList
         data={sensors}
         numColumns={2}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.sensorList}
+        columnWrapperStyle={styles.sensorRow}
+        ListHeaderComponent={
+          <>
+            <LinearGradient
+              colors={['#153B2E', '#356B59', '#D7C1A6']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.heroCard}>
+              <View style={styles.header}>
+                <View style={styles.headerBrand}>
+                  <Image
+                    source={require('@/assets/images/react-logo.png')}
+                    style={styles.logo}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.headerEyebrow}>Connected dashboard</Text>
+                </View>
+
+                <View style={styles.batteryWrap}>
+                  <Progress.Circle
+                    size={42}
+                    indeterminate={false}
+                    progress={batteryProgress}
+                    textStyle={styles.batteryCircleText}
+                    showsText={true}
+                    thickness={3}
+                    borderWidth={0}
+                    color={batteryStatusColors()}
+                    unfilledColor="rgba(255, 255, 255, 0.18)"
+                    formatText={progressFunction}
+                  />
+                </View>
+              </View>
+
+              <Text style={styles.heroTitle}>Explore every sensor on your SensWear platform.</Text>
+              <Text style={styles.heroSubtitle}>
+                Launch live views, validate hardware behaviour and move quickly between modules from
+                one place.
+              </Text>
+
+              <View style={styles.heroMetaRow}>
+                <View style={styles.metaPill}>
+                  <Ionicons name="hardware-chip-outline" size={16} color="#153B2E" />
+                  <Text style={styles.metaPillText}>6 modules ready</Text>
+                </View>
+                <View style={styles.metaPill}>
+                  <Ionicons name="battery-half-outline" size={16} color="#153B2E" />
+                  <Text style={styles.metaPillText}>{batteryLabel}</Text>
+                </View>
+              </View>
+            </LinearGradient>
+
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Sensor shortcuts</Text>
+              <Text style={styles.sectionCaption}>Jump straight into live controls and readings.</Text>
+            </View>
+          </>
+        }
+        ListFooterComponent={
+          <LinearGradient
+            colors={['#132B24', '#24483D']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.footerCard}>
+            <View style={styles.footerIconWrap}>
+              <Ionicons name="globe-outline" size={22} color="#F7F0E8" />
+            </View>
+            <Text style={styles.footerTitle}>Need daughter boards or extra hardware?</Text>
+            <Text style={styles.footerText}>
+              Visit the SensWear website for platform details, accessory information and purchasing
+              options.
+            </Text>
+
+            <View style={styles.footerActions}>
+              <TouchableOpacity style={styles.footerPrimaryButton} onPress={handleOpenWebsite}>
+                <Text style={styles.footerPrimaryText}>Visit website</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.footerGhostButton} onPress={handleOpenWebsite}>
+                <Ionicons name="open-outline" size={16} color="#F7F0E8" />
+                <Text style={styles.footerGhostText}>Shop boards</Text>
+              </TouchableOpacity>
+            </View>
+          </LinearGradient>
+        }
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.sensorItem} onPress={() => handleSelectSensor(item.link)}>
-            <Image source={item.icon} style={styles.logo} resizeMode="contain" />
+            <View style={styles.sensorIconWrap}>
+              <Image source={item.icon} style={styles.sensorIcon} resizeMode="contain" />
+            </View>
             <Text style={styles.sensorName}>{item.name}</Text>
+            <Text style={styles.sensorDescription}>{item.description}</Text>
           </TouchableOpacity>
         )}
       />
@@ -189,54 +329,199 @@ export default function SensorsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: '#F5EFE8',
     paddingTop: 50,
+  },
+  sensorList: {
+    paddingHorizontal: 18,
+    paddingBottom: 28,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    marginBottom: 20,
   },
-  headerLeft: {
-    width: 40,
-    justifyContent: 'center',
+  headerBrand: {
+    gap: 8,
     alignItems: 'flex-start',
+    flexShrink: 1,
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
+  heroCard: {
+    borderRadius: 28,
+    padding: 22,
+    marginBottom: 24,
+    shadowColor: '#153B2E',
+    shadowOpacity: 0.16,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   },
   logo: {
-    width: 100,
-    height: 30,
+    width: 112,
+    height: 34,
   },
-  headerRight: {
+  headerEyebrow: {
+    color: '#F6ECE0',
+    fontSize: 13,
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  batteryWrap: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 999,
+    padding: 8,
+  },
+  batteryCircleText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#F7F0E8',
+  },
+  heroTitle: {
+    color: '#FDF9F4',
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
+    maxWidth: '90%',
+  },
+  heroSubtitle: {
+    color: '#F3E8DD',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 12,
+    maxWidth: '92%',
+  },
+  heroMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 18,
+  },
+  metaPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    width: 40,
-    justifyContent: 'flex-end',
+    gap: 8,
+    backgroundColor: '#F1E3D2',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
   },
-  batteryText: {
+  metaPillText: {
+    color: '#153B2E',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sectionHeader: {
+    marginBottom: 6,
+  },
+  sectionTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#14251F',
+  },
+  sectionCaption: {
+    marginTop: 4,
+    color: '#5F6B65',
     fontSize: 14,
-    fontWeight: '500',
   },
-  sensorList: {
-    padding: 20,
+  sensorRow: {
+    justifyContent: 'space-between',
   },
   sensorItem: {
-    flex: 1,
-    backgroundColor: '#f2f2f2',
-    padding: 16,
-    margin: 8,
-    borderRadius: 12,
+    width: '48%',
+    backgroundColor: '#FFF9F2',
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    marginTop: 14,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    shadowColor: '#6B5C4D',
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  sensorIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    backgroundColor: '#E6F0EA',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sensorIcon: {
+    width: 60,
+    height: 60,
   },
   sensorName: {
     fontSize: 16,
-    fontWeight: '500',
+    fontWeight: '800',
+    color: '#14251F',
+    marginTop: 12,
+  },
+  sensorDescription: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#68736D',
+    marginTop: 6,
+  },
+  footerCard: {
+    marginTop: 28,
+    borderRadius: 28,
+    padding: 22,
+  },
+  footerIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  footerTitle: {
+    color: '#FDF9F4',
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: '800',
+  },
+  footerText: {
+    color: '#D8E1DB',
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 10,
+  },
+  footerActions: {
+    marginTop: 18,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  footerPrimaryButton: {
+    backgroundColor: '#F2E3D0',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 999,
+  },
+  footerPrimaryText: {
+    color: '#14251F',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  footerGhostButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(247, 240, 232, 0.3)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 999,
+  },
+  footerGhostText: {
+    color: '#F7F0E8',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

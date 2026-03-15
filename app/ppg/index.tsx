@@ -1,21 +1,29 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { LineChart } from "react-native-gifted-charts";
-import { Dimensions } from 'react-native';
-import Legend from '@/components/ui/Legend';
+import { LineChart } from 'react-native-gifted-charts';
 import { decode as b64decode } from 'base-64';
-import { PPG_UUIDS } from '@/ble/bleConstants';
-import { useBle } from '@/hooks/BleSessionProvider';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import Legend from '@/components/ui/Legend';
+import { PPG_UUIDS } from '@/ble/bleConstants';
+import { useBle } from '@/hooks/BleSessionProvider';
 
-
-
-const MAX_LENGTH = 500; // Maximum number of items to keep in the chart
-const BUFFER_LIMIT = 500; // Prevent unbounded growth if UI updates are delayed
+const MAX_LENGTH = 500;
+const BUFFER_LIMIT = 500;
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const CHART_WIDTH = SCREEN_WIDTH - 80;
 
 export default function DevicesScreen() {
   const { monitor } = useBle();
@@ -28,9 +36,9 @@ export default function DevicesScreen() {
   const lastIRScrollRef = useRef(0);
   const lastGreenScrollRef = useRef(0);
   const router = useRouter();
-  const rawRedDataChartRef = useRef(null)
-  const rawIRDataChartRef = useRef(null)
-  const rawGreenDataChartRef = useRef(null)
+  const rawRedDataChartRef = useRef(null);
+  const rawIRDataChartRef = useRef(null);
+  const rawGreenDataChartRef = useRef(null);
   const rawGreenBufferRef = useRef<{ green: number }[]>([]);
   const csvRowsRef = useRef<string[]>([]);
   const csvUriRef = useRef<string | null>(null);
@@ -93,7 +101,6 @@ export default function DevicesScreen() {
     const samples = [];
     for (let i = 0; i < sampleCount; i += 1) {
       const offset = i * SAMPLE_SIZE_BYTES;
-      // Firmware sends packed struct as little-endian: uint64 unix_ms + uint32 value.
       samples.push({
         unixMs: readUint64LEAsNumber(bytes, offset),
         value: readUint32LE(bytes, offset + 8),
@@ -103,10 +110,14 @@ export default function DevicesScreen() {
   }
 
   useFocusEffect(
-      React.useCallback(() => {
-        csvUriRef.current = FileSystem.documentDirectory + `ppg-${Date.now()}.csv`;
-        csvRowsRef.current = ['timestamp_ms,channel,value'];
-        const redSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.RED_CHANNEL_CHAR, (c) => {
+    React.useCallback(() => {
+      csvUriRef.current = FileSystem.documentDirectory + `ppg-${Date.now()}.csv`;
+      csvRowsRef.current = ['timestamp_ms,channel,value'];
+
+      const redSub = monitor(
+        PPG_UUIDS.SERVICE_UUID,
+        PPG_UUIDS.RED_CHANNEL_CHAR,
+        (c) => {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
@@ -119,17 +130,24 @@ export default function DevicesScreen() {
           if (rawRedBufferRef.current.length > BUFFER_LIMIT) {
             rawRedBufferRef.current.splice(0, rawRedBufferRef.current.length - BUFFER_LIMIT);
           }
-        }, (e) => {
-          console.log(e)
-        });
-  
-        const irSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.IR_CHANNEL_CHAR, (c) => {
+        },
+        (e) => {
+          console.log(e);
+        }
+      );
+
+      const irSub = monitor(
+        PPG_UUIDS.SERVICE_UUID,
+        PPG_UUIDS.IR_CHANNEL_CHAR,
+        (c) => {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
           const samples = parsePpgSampleBatchNotification(bytes);
           if (samples.length === 0) return;
-          console.log(`Received IR batch with ${samples.length} samples, first sample value: ${samples[0].value}`);
+          console.log(
+            `Received IR batch with ${samples.length} samples, first sample value: ${samples[0].value}`
+          );
           for (const sample of samples) {
             rawIRBufferRef.current.push({ ir: sample.value });
             csvRowsRef.current.push(`${sample.unixMs},ir,${sample.value}`);
@@ -137,11 +155,16 @@ export default function DevicesScreen() {
           if (rawIRBufferRef.current.length > BUFFER_LIMIT) {
             rawIRBufferRef.current.splice(0, rawIRBufferRef.current.length - BUFFER_LIMIT);
           }
-        }, (e) => {
-          console.log(e)
-        });
+        },
+        (e) => {
+          console.log(e);
+        }
+      );
 
-        const greenSub = monitor(PPG_UUIDS.SERVICE_UUID, PPG_UUIDS.GREEN_CHANNEL_CHAR, (c) => {
+      const greenSub = monitor(
+        PPG_UUIDS.SERVICE_UUID,
+        PPG_UUIDS.GREEN_CHANNEL_CHAR,
+        (c) => {
           const v = c.value;
           if (!v) return;
           const bytes = base64ToBytes(v);
@@ -154,69 +177,68 @@ export default function DevicesScreen() {
           if (rawGreenBufferRef.current.length > BUFFER_LIMIT) {
             rawGreenBufferRef.current.splice(0, rawGreenBufferRef.current.length - BUFFER_LIMIT);
           }
-        }, (e) => {
-          console.log(e)
-        });
-        
-        const interval = setInterval(() => {
-          const redBatch = rawRedBufferRef.current.splice(0);
-          const irBatch = rawIRBufferRef.current.splice(0);
-          const greenBatch = rawGreenBufferRef.current.splice(0);
-          if (redBatch.length === 0 && irBatch.length === 0 && greenBatch.length == 0) return;
-  
-          if (redBatch.length > 0) {
-            setRawRedData(prevData => {
-              const red = [...prevData];
-              for (const sample of redBatch) {
-                red.push({ value: sample.red });
-              }
+        },
+        (e) => {
+          console.log(e);
+        }
+      );
 
-              return red.slice(-MAX_LENGTH);
-            });
-          }
+      const interval = setInterval(() => {
+        const redBatch = rawRedBufferRef.current.splice(0);
+        const irBatch = rawIRBufferRef.current.splice(0);
+        const greenBatch = rawGreenBufferRef.current.splice(0);
+        if (redBatch.length === 0 && irBatch.length === 0 && greenBatch.length === 0) return;
 
-          if (irBatch.length > 0) {
-            setRawIRData(prevData => {
-              const ir = [...prevData];
-              for (const sample of irBatch) {
-                ir.push({ value: sample.ir });
-              }
+        if (redBatch.length > 0) {
+          setRawRedData((prevData) => {
+            const red = [...prevData];
+            for (const sample of redBatch) {
+              red.push({ value: sample.red });
+            }
+            return red.slice(-MAX_LENGTH);
+          });
+        }
 
-              return ir.slice(-MAX_LENGTH);
-            });
-          }
+        if (irBatch.length > 0) {
+          setRawIRData((prevData) => {
+            const ir = [...prevData];
+            for (const sample of irBatch) {
+              ir.push({ value: sample.ir });
+            }
+            return ir.slice(-MAX_LENGTH);
+          });
+        }
 
-          if (greenBatch.length > 0) {
-            setRawGreenData(prevData => {
-              const green = [...prevData];
-              for (const sample of greenBatch) {
-                green.push({ value: sample.green });
-              }
-              return green.slice(-MAX_LENGTH);
-            });
-          }
-          if (loading) {
-            setLoading(false);
-          }
-        }, 500);
-  
-        return () => {
-          redSub.remove();
-          irSub.remove();
-          greenSub.remove();
-          clearInterval(interval);
-          rawRedBufferRef.current = [];
-          rawIRBufferRef.current = [];
-          rawGreenBufferRef.current = [];
-          if (csvUriRef.current && csvRowsRef.current.length > 1) {
-            const contents = csvRowsRef.current.join('\n') + '\n';
-            FileSystem.writeAsStringAsync(csvUriRef.current, contents, {
-              encoding: FileSystem.EncodingType.UTF8,
-            }).catch((e) => console.log(e));
-          }
-        };
-      }, [monitor])
-    );
+        if (greenBatch.length > 0) {
+          setRawGreenData((prevData) => {
+            const green = [...prevData];
+            for (const sample of greenBatch) {
+              green.push({ value: sample.green });
+            }
+            return green.slice(-MAX_LENGTH);
+          });
+        }
+
+        setLoading((prev) => (prev ? false : prev));
+      }, 500);
+
+      return () => {
+        redSub.remove();
+        irSub.remove();
+        greenSub.remove();
+        clearInterval(interval);
+        rawRedBufferRef.current = [];
+        rawIRBufferRef.current = [];
+        rawGreenBufferRef.current = [];
+        if (csvUriRef.current && csvRowsRef.current.length > 1) {
+          const contents = csvRowsRef.current.join('\n') + '\n';
+          FileSystem.writeAsStringAsync(csvUriRef.current, contents, {
+            encoding: FileSystem.EncodingType.UTF8,
+          }).catch((e) => console.log(e));
+        }
+      };
+    }, [monitor])
+  );
 
   const shareCsv = async () => {
     if (!isShareAvailable || !csvUriRef.current || csvRowsRef.current.length <= 1) return;
@@ -261,183 +283,349 @@ export default function DevicesScreen() {
     }
   }, [rawGreenData]);
 
-
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerLeft}>
-          <Ionicons name="chevron-back" size={24} color="black" />
-        </TouchableOpacity>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <LinearGradient
+        colors={['#153B2E', '#356B59', '#D7C1A6']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.heroCard}>
+        <View style={styles.heroHeader}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.iconButton}>
+            <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
+          </TouchableOpacity>
 
-        <View style={styles.headerCenter}>
-          <Text style={styles.title}>PPG</Text>
+          <TouchableOpacity
+            onPress={shareCsv}
+            disabled={!isShareAvailable}
+            style={[styles.iconButton, !isShareAvailable && styles.iconButtonDisabled]}>
+            <Ionicons
+              name="share-outline"
+              size={18}
+              color={isShareAvailable ? '#F7F0E8' : 'rgba(247, 240, 232, 0.45)'}
+            />
+          </TouchableOpacity>
         </View>
 
-        <View style={styles.headerRight}>
-          <TouchableOpacity onPress={shareCsv} disabled={!isShareAvailable}>
-            <Ionicons name="share-outline" size={22} color={isShareAvailable ? "black" : "#aaa"} />
-          </TouchableOpacity>
+        <Text style={styles.eyebrow}>PPG live view</Text>
+        <Text style={styles.heroTitle}>Optical signal channels, captured continuously.</Text>
+        <Text style={styles.heroSubtitle}>
+          Review red, infrared and green sensor streams while keeping CSV export one tap away.
+        </Text>
+
+        <View style={styles.heroMetaRow}>
+          <View style={styles.metaPill}>
+            <Ionicons name="pulse-outline" size={15} color="#153B2E" />
+            <Text style={styles.metaPillText}>3 channels</Text>
+          </View>
+          <View style={styles.metaPill}>
+            <Ionicons name="download-outline" size={15} color="#153B2E" />
+            <Text style={styles.metaPillText}>{isShareAvailable ? 'CSV export ready' : 'Share unavailable'}</Text>
+          </View>
+          <View style={styles.metaPill}>
+            <Ionicons name="radio-outline" size={15} color="#153B2E" />
+            <Text style={styles.metaPillText}>{loading ? 'Waiting for data' : 'Streaming'}</Text>
+          </View>
+        </View>
+      </LinearGradient>
+
+      <View style={styles.summaryRow}>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>Channels</Text>
+          <Text style={styles.summaryValue}>Red / IR / Green</Text>
+          <Text style={styles.summaryHint}>Live optical waveform capture</Text>
+        </View>
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>Export</Text>
+          <Text style={styles.summaryValue}>CSV logging</Text>
+          <Text style={styles.summaryHint}>Timestamped samples preserved</Text>
         </View>
       </View>
 
       {loading ? (
-        <ActivityIndicator size="large" color="#000" />
+        <View style={styles.loadingCard}>
+          <ActivityIndicator size="large" color="#153B2E" />
+          <Text style={styles.loadingTitle}>Waiting for PPG packets</Text>
+          <Text style={styles.loadingText}>Charts will populate when optical samples arrive.</Text>
+        </View>
       ) : (
-        <ScrollView style={styles.mainContainer}>
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLeftSideLine} />
-            <View>
-              <Text style={styles.dividerText}>Red Channel</Text>
+        <>
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Red Channel</Text>
+                <Text style={styles.sectionCaption}>Primary optical readings from the red LED path.</Text>
+              </View>
+              <View style={[styles.sectionBadge, styles.redBadge]}>
+                <Text style={styles.sectionBadgeText}>RED</Text>
+              </View>
             </View>
-            <View style={styles.dividerRightSideLine} />
-          </View>
-          <Legend
-            items={[
-              { label: 'Red', color: 'red' },
-            ]}
-          />
-          <LineChart
-            scrollRef={rawRedDataChartRef}
-            width={Dimensions.get('window').width - 70}
-            showScrollIndicator={true}
-            hideDataPoints
-            isAnimated={false}
-            interpolateMissingValues={false}
-            initialSpacing={0}
-            endSpacing={0}
-            spacing={1}
-            data={rawRedData}
-            color1="red"
-            yAxisOffset={redRange?.min}
-          />
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLeftSideLine} />
-            <View>
-              <Text style={styles.dividerText}>IR Channel</Text>
+
+            <Legend items={[{ label: 'Red', color: 'red' }]} />
+
+            <View style={styles.chartWrap}>
+              <LineChart
+                scrollRef={rawRedDataChartRef}
+                width={CHART_WIDTH}
+                showScrollIndicator={true}
+                hideDataPoints
+                isAnimated={false}
+                interpolateMissingValues={false}
+                initialSpacing={0}
+                endSpacing={0}
+                spacing={1}
+                data={rawRedData}
+                color1="red"
+                yAxisOffset={redRange?.min}
+              />
             </View>
-            <View style={styles.dividerRightSideLine} />
           </View>
-          <Legend
-            items={[
-              { label: 'IR', color: 'black' },
-            ]}
-          />
-          <LineChart
-            scrollRef={rawIRDataChartRef}
-            width={Dimensions.get('window').width - 70}
-            showScrollIndicator={true}
-            hideDataPoints
-            isAnimated={false}
-            interpolateMissingValues={false}
-            initialSpacing={0}
-            endSpacing={0}
-            spacing={1}
-            data={rawIRData}
-            color1="black"
-            yAxisOffset={irRange?.min}
-          />
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLeftSideLine} />
-            <View>
-              <Text style={styles.dividerText}>Green Channel</Text>
+
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>IR Channel</Text>
+                <Text style={styles.sectionCaption}>Infrared stream used for deep optical comparisons.</Text>
+              </View>
+              <View style={[styles.sectionBadge, styles.irBadge]}>
+                <Text style={styles.sectionBadgeText}>IR</Text>
+              </View>
             </View>
-            <View style={styles.dividerRightSideLine} />
+
+            <Legend items={[{ label: 'IR', color: 'black' }]} />
+
+            <View style={styles.chartWrap}>
+              <LineChart
+                scrollRef={rawIRDataChartRef}
+                width={CHART_WIDTH}
+                showScrollIndicator={true}
+                hideDataPoints
+                isAnimated={false}
+                interpolateMissingValues={false}
+                initialSpacing={0}
+                endSpacing={0}
+                spacing={1}
+                data={rawIRData}
+                color1="black"
+                yAxisOffset={irRange?.min}
+              />
+            </View>
           </View>
-          <Legend
-            items={[
-              { label: 'Green', color: 'lime' },
-            ]}
-          />
-          <LineChart
-            scrollRef={rawGreenDataChartRef}
-            width={Dimensions.get('window').width - 70}
-            showScrollIndicator={true}
-            hideDataPoints
-            isAnimated={false}
-            interpolateMissingValues={false}
-            initialSpacing={0}
-            endSpacing={0}
-            spacing={1}
-            data={rawGreenData}
-            color1="lime"
-            yAxisOffset={greenRange?.min}
-          />
-        </ScrollView>
+
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Green Channel</Text>
+                <Text style={styles.sectionCaption}>Green optical samples for signal balancing and checks.</Text>
+              </View>
+              <View style={[styles.sectionBadge, styles.greenBadge]}>
+                <Text style={styles.sectionBadgeText}>GREEN</Text>
+              </View>
+            </View>
+
+            <Legend items={[{ label: 'Green', color: 'lime' }]} />
+
+            <View style={styles.chartWrap}>
+              <LineChart
+                scrollRef={rawGreenDataChartRef}
+                width={CHART_WIDTH}
+                showScrollIndicator={true}
+                hideDataPoints
+                isAnimated={false}
+                interpolateMissingValues={false}
+                initialSpacing={0}
+                endSpacing={0}
+                spacing={1}
+                data={rawGreenData}
+                color1="lime"
+                yAxisOffset={greenRange?.min}
+              />
+            </View>
+          </View>
+        </>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#F5EFE8',
+  },
+  content: {
     paddingTop: 50,
-    backgroundColor: '#fff',
+    paddingHorizontal: 18,
+    paddingBottom: 32,
   },
-  mainContainer: {
-    paddingHorizontal: 20,
+  heroCard: {
+    borderRadius: 28,
+    padding: 22,
+    shadowColor: '#153B2E',
+    shadowOpacity: 0.16,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 12 },
+    elevation: 8,
   },
-  header: {
+  heroHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ddd',
+    alignItems: 'center',
+    marginBottom: 20,
   },
-  headerLeft: {
-    width: 40,
+  iconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'flex-start',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
-  headerRight: {
+  iconButtonDisabled: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  eyebrow: {
+    color: '#F6ECE0',
+    fontSize: 13,
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+  },
+  heroTitle: {
+    color: '#FDF9F4',
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
+    maxWidth: '92%',
+    marginTop: 8,
+  },
+  heroSubtitle: {
+    color: '#F3E8DD',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 12,
+    maxWidth: '92%',
+  },
+  heroMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 18,
+  },
+  metaPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    width: 40,
-    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#F1E3D2',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  logo: {
-    width: 100,
-    height: 30,
-  },
-  title: {
-    fontSize: 22,
+  metaPillText: {
+    color: '#153B2E',
+    fontSize: 13,
     fontWeight: '700',
-    textAlign: 'center',
   },
-  deviceItem: {
-    backgroundColor: '#f1f1f1',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  deviceName: {
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  dividerContainer: {
+  summaryRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 18,
+  },
+  summaryCard: {
+    width: '48%',
+    backgroundColor: '#FFF9F2',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    padding: 16,
+  },
+  summaryLabel: {
+    color: '#68736D',
+    fontSize: 12,
+  },
+  summaryValue: {
+    color: '#14251F',
+    fontSize: 19,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  summaryHint: {
+    color: '#5F6B65',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 6,
+  },
+  loadingCard: {
+    marginTop: 18,
+    backgroundColor: '#FFF9F2',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    paddingHorizontal: 18,
+    paddingVertical: 26,
     alignItems: 'center',
-    marginTop: 20,
   },
-  dividerLeftSideLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: 'black'
+  loadingTitle: {
+    color: '#14251F',
+    fontSize: 20,
+    fontWeight: '800',
+    marginTop: 14,
   },
-  dividerRightSideLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: 'black'
-  },
-  dividerText: {
-    width: 100,
+  loadingText: {
+    color: '#5F6B65',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
     textAlign: 'center',
-    fontSize: 15
-  }
+  },
+  sectionCard: {
+    marginTop: 18,
+    backgroundColor: '#FFF9F2',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#E9DACC',
+    padding: 18,
+    overflow: 'hidden',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 2,
+    gap: 12,
+  },
+  sectionTitle: {
+    color: '#14251F',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  sectionCaption: {
+    color: '#5F6B65',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 4,
+    maxWidth: 240,
+  },
+  sectionBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  redBadge: {
+    backgroundColor: '#F5D4CF',
+  },
+  irBadge: {
+    backgroundColor: '#DDD8D1',
+  },
+  greenBadge: {
+    backgroundColor: '#D8E8D4',
+  },
+  sectionBadgeText: {
+    color: '#153B2E',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  chartWrap: {
+    marginTop: 6,
+    marginHorizontal: -6,
+  },
 });
