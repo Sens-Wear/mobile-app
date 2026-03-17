@@ -3,6 +3,9 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { encode as b64encode } from 'base-64';
+import { HAPTIC_UUIDS } from '@/ble/bleConstants';
+import { useBle } from '@/hooks/BleSessionProvider';
 
 type DemoMode = 'Library' | 'RTP' | 'Sequence';
 
@@ -16,7 +19,13 @@ type Preset = {
   amplitudes: number[];
 };
 
+type HapticFrame = {
+  durationMs: number;
+  intensity: number;
+};
+
 const FRAME_MS = 80;
+const HAPTIC_PROTOCOL_VERSION = 1;
 
 const PRESETS: Preset[] = [
   {
@@ -71,25 +80,54 @@ const INTENSITY_LEVELS = [0.25, 0.5, 0.75, 1];
 const MODE_COPY: Record<DemoMode, { title: string; subtitle: string }> = {
   Library: {
     title: 'Library Playback',
-    subtitle: 'Show pre-baked DRV2605 effects by ID with fast event-style feedback.',
+    subtitle: 'Send compact confirmation patterns over BLE with a fast event-style envelope.',
   },
   RTP: {
     title: 'Real-Time Amplitude',
-    subtitle: 'Expose strength control for variable drive without changing the BLE contract yet.',
+    subtitle: 'Scale the outgoing frame intensities before they are written to the haptic service.',
   },
   Sequence: {
     title: 'Sequence Builder',
-    subtitle: 'Chain multiple effects into a richer actuator story for alerts and coaching cues.',
+    subtitle: 'Chain multiple pulses into a richer BLE-driven routine for alerts and coaching cues.',
   },
 };
 
+function clampToByte(value: number) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function framesToBase64(frames: HapticFrame[]) {
+  const bytes = new Uint8Array(4 + frames.length * 3);
+  const view = new DataView(bytes.buffer);
+
+  bytes[0] = HAPTIC_PROTOCOL_VERSION;
+  bytes[1] = 0;
+  view.setUint16(2, frames.length, true);
+
+  frames.forEach((frame, index) => {
+    const offset = 4 + index * 3;
+    view.setUint16(offset, frame.durationMs, true);
+    bytes[offset + 2] = frame.intensity;
+  });
+
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return b64encode(binary);
+}
+
 export default function VibrationScreen() {
+  const { isConnected, writeWithResponse } = useBle();
   const router = useRouter();
   const [mode, setMode] = useState<DemoMode>('Library');
   const [selectedPresetId, setSelectedPresetId] = useState('strong-click');
   const [intensity, setIntensity] = useState(0.75);
   const [isPlaying, setIsPlaying] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   const availablePresets = useMemo(() => PRESETS.filter((preset) => preset.family === mode), [mode]);
 
@@ -100,6 +138,15 @@ export default function VibrationScreen() {
   const playbackFrames = useMemo(
     () => selectedPreset.amplitudes.map((value) => Math.min(1, value * intensity)),
     [intensity, selectedPreset]
+  );
+
+  const hapticFrames = useMemo<HapticFrame[]>(
+    () =>
+      playbackFrames.map((value) => ({
+        durationMs: FRAME_MS,
+        intensity: clampToByte(value * 255),
+      })),
+    [playbackFrames]
   );
 
   const activeFrameIndex = Math.min(playbackFrames.length - 1, Math.floor(elapsedMs / FRAME_MS));
@@ -143,15 +190,48 @@ export default function VibrationScreen() {
     return () => clearInterval(interval);
   }, [isPlaying, playbackFrames.length]);
 
-  const startPreview = () => {
-    setElapsedMs(0);
-    setIsPlaying(true);
-  };
-
-  const stopPreview = () => {
+  useEffect(() => {
+    if (isConnected) {
+      return;
+    }
     setIsPlaying(false);
     setElapsedMs(0);
+  }, [isConnected]);
+
+  const startPreview = async () => {
+    if (!isConnected || isSending) {
+      return;
+    }
+
+    setSendError(null);
+    setIsSending(true);
+
+    try {
+      const payload = framesToBase64(hapticFrames);
+      await writeWithResponse(HAPTIC_UUIDS.SERVICE_UUID, HAPTIC_UUIDS.HAPTIC_PATTER_CHAR, payload);
+      setElapsedMs(0);
+      setIsPlaying(true);
+    } catch (error) {
+      setIsPlaying(false);
+      setElapsedMs(0);
+      setSendError(error instanceof Error ? error.message : 'Failed to send haptic pattern.');
+    } finally {
+      setIsSending(false);
+    }
   };
+
+  const resetPreview = () => {
+    setElapsedMs(0);
+    setIsPlaying(false);
+  };
+
+  const transportStatus = !isConnected
+    ? 'Connect to a paired device to send the active pattern.'
+    : sendError
+      ? sendError
+      : isSending
+        ? 'Writing the frame payload to the haptic BLE characteristic.'
+        : 'The active preset is encoded as protocol v1, then written over BLE with response.';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -177,11 +257,11 @@ export default function VibrationScreen() {
         <View style={styles.heroMetaRow}>
           <View style={styles.metaPill}>
             <Ionicons name="hardware-chip-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>DRV2605 preview</Text>
+            <Text style={styles.metaPillText}>Pattern encoder</Text>
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="radio-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>BLE pending</Text>
+            <Text style={styles.metaPillText}>{isConnected ? 'BLE connected' : 'BLE disconnected'}</Text>
           </View>
         </View>
       </LinearGradient>
@@ -195,7 +275,9 @@ export default function VibrationScreen() {
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Drive level</Text>
           <Text style={styles.summaryValue}>{Math.round(intensity * 100)}%</Text>
-          <Text style={styles.summaryHint}>{isPlaying ? 'Preview playing' : 'Ready to preview'}</Text>
+          <Text style={styles.summaryHint}>
+            {isSending ? 'Sending pattern' : isPlaying ? 'Playback mirrored locally' : 'Ready to send'}
+          </Text>
         </View>
       </View>
 
@@ -203,7 +285,9 @@ export default function VibrationScreen() {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Playback controls</Text>
-            <Text style={styles.sectionCaption}>Start or stop the local preview without changing any BLE wiring.</Text>
+            <Text style={styles.sectionCaption}>
+              Send the active envelope to the BLE haptic service and mirror progress in the preview below.
+            </Text>
           </View>
           <View style={styles.sectionBadge}>
             <Text style={styles.sectionBadgeText}>{mode.toUpperCase()}</Text>
@@ -225,14 +309,19 @@ export default function VibrationScreen() {
         </View>
 
         <View style={styles.actionRow}>
-          <TouchableOpacity style={styles.primaryButton} onPress={startPreview}>
+          <TouchableOpacity
+            style={[styles.primaryButton, (!isConnected || isSending) && styles.primaryButtonDisabled]}
+            disabled={!isConnected || isSending}
+            onPress={startPreview}>
             <Ionicons name="play" size={16} color="#F7F0E8" />
-            <Text style={styles.primaryButtonText}>{isPlaying ? 'Restart Preview' : 'Preview Effect'}</Text>
+            <Text style={styles.primaryButtonText}>{isSending ? 'Sending...' : isPlaying ? 'Send Again' : 'Send Effect'}</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryButton} onPress={stopPreview}>
-            <Text style={styles.secondaryButtonText}>Stop</Text>
+          <TouchableOpacity style={styles.secondaryButton} onPress={resetPreview}>
+            <Text style={styles.secondaryButtonText}>Reset Preview</Text>
           </TouchableOpacity>
         </View>
+
+        <Text style={[styles.transportText, !!sendError && styles.transportTextError]}>{transportStatus}</Text>
       </View>
 
       <View style={styles.sectionCard}>
@@ -315,7 +404,9 @@ export default function VibrationScreen() {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Drive level</Text>
-            <Text style={styles.sectionCaption}>Adjust the preview strength applied to the active envelope.</Text>
+            <Text style={styles.sectionCaption}>
+              Adjust the intensity byte that gets encoded into each outgoing frame.
+            </Text>
           </View>
           <View style={styles.sectionBadge}>
             <Text style={styles.sectionBadgeText}>INTENSITY</Text>
@@ -336,34 +427,6 @@ export default function VibrationScreen() {
               </TouchableOpacity>
             );
           })}
-        </View>
-      </View>
-
-      <View style={styles.sectionCard}>
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionTitle}>Sequence example</Text>
-            <Text style={styles.sectionCaption}>Reference chain showing how richer routines can be composed later.</Text>
-          </View>
-          <View style={styles.sectionBadge}>
-            <Text style={styles.sectionBadgeText}>3 STEP</Text>
-          </View>
-        </View>
-
-        <View style={styles.sequenceCard}>
-          {sequencePreview.map((preset, index) => (
-            <View key={preset.id} style={styles.sequenceStep}>
-              <Text style={styles.sequenceIndex}>{index + 1}</Text>
-              <View style={styles.sequenceTextWrap}>
-                <Text style={styles.sequenceName}>{preset.name}</Text>
-                <Text style={styles.sequenceMeta}>{preset.durationMs} ms</Text>
-              </View>
-            </View>
-          ))}
-          <Text style={styles.sequenceFootnote}>
-            This page is local-only. Once BLE is wired, the same preset model can map to DRV2605 library IDs, RTP
-            values, or sequencer slots.
-          </Text>
         </View>
       </View>
     </ScrollView>
@@ -558,6 +621,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 14,
   },
+  primaryButtonDisabled: {
+    backgroundColor: '#6F857A',
+  },
   primaryButtonText: {
     color: '#F7F0E8',
     fontSize: 14,
@@ -576,6 +642,15 @@ const styles = StyleSheet.create({
     color: '#14251F',
     fontSize: 14,
     fontWeight: '700',
+  },
+  transportText: {
+    marginTop: 14,
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#5F6B65',
+  },
+  transportTextError: {
+    color: '#B4473B',
   },
   waveCard: {
     marginTop: 18,
@@ -710,3 +785,4 @@ const styles = StyleSheet.create({
     color: '#5F6B65',
   },
 });
+
