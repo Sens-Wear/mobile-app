@@ -17,6 +17,7 @@ import * as Progress from 'react-native-progress';
 import { decode as b64decode } from 'base-64';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { POWER_UUIDS } from '@/ble/bleConstants';
+import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
 
 const WEBSITE_URL = 'https://sens-wear.com';
 
@@ -69,6 +70,7 @@ export default function SettingsScreen() {
     bBatteryOCPFault: false,
   });
   const { forget, monitor, readCharacteristic, isConnected } = useBle();
+  const daughterBoardState = useFocusedDaughterBoardState();
 
   function base64ToBytes(base64: string) {
     const binary = b64decode(base64);
@@ -257,6 +259,15 @@ export default function SettingsScreen() {
     gaugeInfo.average_current_ma > -1 ? `${gaugeInfo.average_current_ma} mA` : '--';
   const batteryPower = gaugeInfo.average_power_mw > -1 ? `${gaugeInfo.average_power_mw} mW` : '--';
   const chargeColor = chargerInfo.bCharging ? '#305CDE' : chargerInfo.bCharged ? '#1C7C54' : '#AF2B1E';
+  const connectedBoardsValue =
+    daughterBoardState.connectedBoardNames.length > 0
+      ? daughterBoardState.connectedBoardNames.join(', ')
+      : 'None detected';
+  const activeBoardValue = connectedBoardsValue;
+  const connectedBoardsLabel =
+    daughterBoardState.connectedBoardNames.length === 1
+      ? 'Connected daughter board'
+      : 'Connected daughter boards';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -326,7 +337,8 @@ export default function SettingsScreen() {
 
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Platform details</Text>
-        <InfoRow label="Connected daughter boards" value="IMU, Temperature" />
+        <InfoRow label={connectedBoardsLabel} value={connectedBoardsValue} />
+        <InfoRow label="Active daughter board" value={activeBoardValue} />
         <InfoRow label="Firmware version" value="3.1.2" />
         <InfoRow label="Mobile app version" value="1.3.4" isLast />
       </View>

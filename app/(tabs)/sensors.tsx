@@ -15,47 +15,68 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Progress from 'react-native-progress';
 import { decode as b64decode } from 'base-64';
 import { useBle } from '@/hooks/BleSessionProvider';
+import {
+  isSensorModuleActive,
+  isSensorModuleAvailable,
+} from '@/ble/daughterBoardState';
 import { POWER_UUIDS } from '@/ble/bleConstants';
+import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
+import type { SensorModuleKey } from '@/constants/DaughterBoardConstants';
 
-const sensors = [
+type SensorDefinition = {
+  id: string;
+  name: string;
+  moduleKey: SensorModuleKey;
+  description: string;
+  icon: number;
+  link: string;
+};
+
+const sensors: SensorDefinition[] = [
   {
     id: '1',
-    name: 'PPG',
-    description: 'Heart-rate signal and pulse trends',
-    icon: require('@/assets/images/dashboard_icons/heart_rate.png'),
-    link: '/ppg',
+    name: 'LED',
+    moduleKey: 'LED',
+    description: 'Light patterns and visual feedback',
+    icon: require('@/assets/images/dashboard_icons/led.png'),
+    link: '/led',
   },
   {
     id: '2',
     name: 'IMU',
+    moduleKey: 'IMU',
     description: 'Motion, posture and movement data',
     icon: require('@/assets/images/dashboard_icons/imu.png'),
     link: '/imu',
   },
   {
     id: '3',
+    name: 'PPG',
+    moduleKey: 'PPG',
+    description: 'Heart-rate signal and pulse trends',
+    icon: require('@/assets/images/dashboard_icons/heart_rate.png'),
+    link: '/ppg',
+  },
+  {
+    id: '4',
     name: 'Temperature',
+    moduleKey: 'Temperature',
     description: 'Body and ambient temperature checks',
     icon: require('@/assets/images/dashboard_icons/temperature.png'),
     link: '/temperature',
   },
   {
-    id: '4',
+    id: '5',
     name: 'Touch',
+    moduleKey: 'Touch',
     description: 'Touch sensing and interaction events',
     icon: require('@/assets/images/dashboard_icons/touch.png'),
     link: '/touch',
   },
   {
-    id: '5',
-    name: 'LED',
-    description: 'Light patterns and visual feedback',
-    icon: require('@/assets/images/dashboard_icons/led.png'),
-    link: '/led',
-  },
-  {
     id: '6',
     name: 'Vibration',
+    moduleKey: 'Vibration',
     description: 'Haptic feedback and motor control',
     icon: require('@/assets/images/dashboard_icons/vibration.png'),
     link: '/vibration',
@@ -72,6 +93,7 @@ export default function SensorsScreen() {
     bCharging: false,
   });
   const { monitor, readCharacteristic, isConnected } = useBle();
+  const daughterBoardState = useFocusedDaughterBoardState();
   const router = useRouter();
 
   function base64ToBytes(base64: string) {
@@ -219,6 +241,9 @@ export default function SensorsScreen() {
     gaugeInfo.state_of_charge_cdec > -1
       ? `${Math.floor(gaugeInfo.state_of_charge_cdec / 10)}% battery`
       : 'Battery status pending';
+  const readyModulesLabel = `${daughterBoardState.readyModuleCount} ${
+    daughterBoardState.readyModuleCount === 1 ? 'module' : 'modules'
+  } ready`;
 
   return (
     <View style={styles.container}>
@@ -270,7 +295,7 @@ export default function SensorsScreen() {
               <View style={styles.heroMetaRow}>
                 <View style={styles.metaPill}>
                   <Ionicons name="hardware-chip-outline" size={16} color="#153B2E" />
-                  <Text style={styles.metaPillText}>6 modules ready</Text>
+                  <Text style={styles.metaPillText}>{readyModulesLabel}</Text>
                 </View>
                 <View style={styles.metaPill}>
                   <Ionicons name="battery-half-outline" size={16} color="#153B2E" />
@@ -312,15 +337,62 @@ export default function SensorsScreen() {
             </View>
           </LinearGradient>
         }
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.sensorItem} onPress={() => handleSelectSensor(item.link)}>
-            <View style={styles.sensorIconWrap}>
+        renderItem={({ item }) => {
+          const isAvailable = isSensorModuleAvailable(item.moduleKey, daughterBoardState);
+          const isActive = isSensorModuleActive(item.moduleKey, daughterBoardState);
+          const statusLabel =
+            item.moduleKey === 'IMU' || item.moduleKey === 'LED'
+              ? 'Main board'
+              : isAvailable
+                ? 'Active board'
+                : 'Not connected';
+
+          return (
+            <TouchableOpacity
+              style={[
+                styles.sensorItem,
+                !isAvailable && styles.sensorItemDisabled,
+                isActive && styles.sensorItemActive,
+              ]}
+              onPress={() => handleSelectSensor(item.link)}
+              disabled={!isAvailable}>
+              <View
+                style={[
+                  styles.sensorIconWrap,
+                  !isAvailable && styles.sensorIconWrapDisabled,
+                  isActive && styles.sensorIconWrapActive,
+                ]}>
               <Image source={item.icon} style={styles.sensorIcon} resizeMode="contain" />
-            </View>
-            <Text style={styles.sensorName}>{item.name}</Text>
-            <Text style={styles.sensorDescription}>{item.description}</Text>
-          </TouchableOpacity>
-        )}
+              </View>
+              <Text
+                style={[
+                  styles.sensorName,
+                  !isAvailable && styles.sensorNameDisabled,
+                  isActive && styles.sensorNameActive,
+                ]}>
+                {item.name}
+              </Text>
+              <Text style={[styles.sensorDescription, !isAvailable && styles.sensorDescriptionDisabled]}>
+                {item.description}
+              </Text>
+              <View
+                style={[
+                  styles.sensorStatusPill,
+                  !isAvailable && styles.sensorStatusPillDisabled,
+                  isActive && styles.sensorStatusPillActive,
+                ]}>
+                <Text
+                  style={[
+                    styles.sensorStatusText,
+                    !isAvailable && styles.sensorStatusTextDisabled,
+                    isActive && styles.sensorStatusTextActive,
+                  ]}>
+                  {statusLabel}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
     </View>
   );
@@ -442,6 +514,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 3,
   },
+  sensorItemDisabled: {
+    backgroundColor: '#ECE7E1',
+    borderColor: '#DDD3C9',
+  },
+  sensorItemActive: {
+    borderColor: '#356B59',
+    shadowOpacity: 0.14,
+  },
   sensorIconWrap: {
     width: 56,
     height: 56,
@@ -449,6 +529,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#E6F0EA',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  sensorIconWrapDisabled: {
+    backgroundColor: '#DDD7D0',
+  },
+  sensorIconWrapActive: {
+    backgroundColor: '#D6E8DF',
   },
   sensorIcon: {
     width: 60,
@@ -460,11 +546,45 @@ const styles = StyleSheet.create({
     color: '#14251F',
     marginTop: 12,
   },
+  sensorNameDisabled: {
+    color: '#768078',
+  },
+  sensorNameActive: {
+    color: '#153B2E',
+  },
   sensorDescription: {
     fontSize: 12,
     lineHeight: 18,
     color: '#68736D',
     marginTop: 6,
+  },
+  sensorDescriptionDisabled: {
+    color: '#8A918B',
+  },
+  sensorStatusPill: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    backgroundColor: '#E6F0EA',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  sensorStatusPillDisabled: {
+    backgroundColor: '#D9D2CB',
+  },
+  sensorStatusPillActive: {
+    backgroundColor: '#153B2E',
+  },
+  sensorStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#153B2E',
+  },
+  sensorStatusTextDisabled: {
+    color: '#6E746F',
+  },
+  sensorStatusTextActive: {
+    color: '#F7F0E8',
   },
   footerCard: {
     marginTop: 28,
