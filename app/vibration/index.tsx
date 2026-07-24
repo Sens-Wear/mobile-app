@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,7 @@ import { HAPTIC_UUIDS } from '@/ble/bleConstants';
 import { useBle } from '@/hooks/BleSessionProvider';
 
 type DemoMode = 'Library' | 'RTP' | 'Sequence';
+type PatternSource = 'Preset' | 'Morse';
 
 type Preset = {
   id: string;
@@ -26,6 +27,11 @@ type HapticFrame = {
 
 const FRAME_MS = 80;
 const HAPTIC_PROTOCOL_VERSION = 1;
+const MORSE_UNIT_FRAMES = 1;
+const MORSE_DASH_FRAMES = MORSE_UNIT_FRAMES * 3;
+const MORSE_SYMBOL_GAP_FRAMES = MORSE_UNIT_FRAMES;
+const MORSE_LETTER_GAP_FRAMES = MORSE_UNIT_FRAMES * 3;
+const MORSE_MAX_WORD_LENGTH = 16;
 
 const PRESETS: Preset[] = [
   {
@@ -92,6 +98,45 @@ const MODE_COPY: Record<DemoMode, { title: string; subtitle: string }> = {
   },
 };
 
+const MORSE_CODE_MAP: Record<string, string> = {
+  A: '.-',
+  B: '-...',
+  C: '-.-.',
+  D: '-..',
+  E: '.',
+  F: '..-.',
+  G: '--.',
+  H: '....',
+  I: '..',
+  J: '.---',
+  K: '-.-',
+  L: '.-..',
+  M: '--',
+  N: '-.',
+  O: '---',
+  P: '.--.',
+  Q: '--.-',
+  R: '.-.',
+  S: '...',
+  T: '-',
+  U: '..-',
+  V: '...-',
+  W: '.--',
+  X: '-..-',
+  Y: '-.--',
+  Z: '--..',
+  '0': '-----',
+  '1': '.----',
+  '2': '..---',
+  '3': '...--',
+  '4': '....-',
+  '5': '.....',
+  '6': '-....',
+  '7': '--...',
+  '8': '---..',
+  '9': '----.',
+};
+
 function clampToByte(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
@@ -118,11 +163,46 @@ function framesToBase64(frames: HapticFrame[]) {
   return b64encode(binary);
 }
 
+function buildMorseFrames(word: string) {
+  const symbols = word
+    .split('')
+    .map((character) => MORSE_CODE_MAP[character])
+    .filter(Boolean);
+
+  if (symbols.length === 0) {
+    return { frames: [] as number[], morseText: '' };
+  }
+
+  const frames: number[] = [];
+
+  symbols.forEach((pattern, letterIndex) => {
+    pattern.split('').forEach((symbol, symbolIndex) => {
+      const activeFrames = symbol === '-' ? MORSE_DASH_FRAMES : MORSE_UNIT_FRAMES;
+      frames.push(...Array.from({ length: activeFrames }, () => 1));
+
+      if (symbolIndex < pattern.length - 1) {
+        frames.push(...Array.from({ length: MORSE_SYMBOL_GAP_FRAMES }, () => 0));
+      }
+    });
+
+    if (letterIndex < symbols.length - 1) {
+      frames.push(...Array.from({ length: MORSE_LETTER_GAP_FRAMES }, () => 0));
+    }
+  });
+
+  return {
+    frames,
+    morseText: symbols.join(' '),
+  };
+}
+
 export default function VibrationScreen() {
   const { isConnected, writeWithResponse } = useBle();
   const router = useRouter();
   const [mode, setMode] = useState<DemoMode>('Library');
+  const [patternSource, setPatternSource] = useState<PatternSource>('Preset');
   const [selectedPresetId, setSelectedPresetId] = useState('strong-click');
+  const [morseWord, setMorseWord] = useState('');
   const [intensity, setIntensity] = useState(0.75);
   const [isPlaying, setIsPlaying] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -135,9 +215,19 @@ export default function VibrationScreen() {
     return availablePresets.find((preset) => preset.id === selectedPresetId) ?? availablePresets[0] ?? PRESETS[0];
   }, [availablePresets, selectedPresetId]);
 
+  const normalizedMorseWord = useMemo(
+    () => morseWord.trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, MORSE_MAX_WORD_LENGTH),
+    [morseWord]
+  );
+
+  const morsePattern = useMemo(() => buildMorseFrames(normalizedMorseWord), [normalizedMorseWord]);
+
   const playbackFrames = useMemo(
-    () => selectedPreset.amplitudes.map((value) => Math.min(1, value * intensity)),
-    [intensity, selectedPreset]
+    () =>
+      (patternSource === 'Morse' ? morsePattern.frames : selectedPreset.amplitudes).map((value) =>
+        Math.min(1, value * intensity)
+      ),
+    [intensity, morsePattern.frames, patternSource, selectedPreset]
   );
 
   const hapticFrames = useMemo<HapticFrame[]>(
@@ -150,14 +240,6 @@ export default function VibrationScreen() {
   );
 
   const activeFrameIndex = Math.min(playbackFrames.length - 1, Math.floor(elapsedMs / FRAME_MS));
-
-  const sequencePreview = useMemo(() => {
-    return [
-      PRESETS.find((preset) => preset.id === 'strong-click'),
-      PRESETS.find((preset) => preset.id === 'heartbeat'),
-      PRESETS.find((preset) => preset.id === 'buzz-alert'),
-    ].filter(Boolean) as Preset[];
-  }, []);
 
   useEffect(() => {
     setSelectedPresetId((current) => {
@@ -198,8 +280,14 @@ export default function VibrationScreen() {
     setElapsedMs(0);
   }, [isConnected]);
 
+  useEffect(() => {
+    setElapsedMs(0);
+    setIsPlaying(false);
+    setSendError(null);
+  }, [normalizedMorseWord, patternSource]);
+
   const startPreview = async () => {
-    if (!isConnected || isSending) {
+    if (!isConnected || isSending || playbackFrames.length === 0) {
       return;
     }
 
@@ -225,13 +313,37 @@ export default function VibrationScreen() {
     setIsPlaying(false);
   };
 
+  const sourceTitle = patternSource === 'Morse' ? (normalizedMorseWord || 'Waiting for word') : selectedPreset.name;
+  const sourceDetail =
+    patternSource === 'Morse'
+      ? normalizedMorseWord
+        ? `${normalizedMorseWord.length} characters, ${playbackFrames.length * FRAME_MS} ms total duration.`
+        : 'Enter one word to generate a Morse envelope.'
+      : `${selectedPreset.durationMs} ms total duration.`;
+  const envelopeCaption = 'Frame-by-frame amplitude preview for the active pattern and intensity.';
+  const envelopeDescription =
+    patternSource === 'Morse'
+      ? normalizedMorseWord
+        ? `Generated from "${normalizedMorseWord}" as a Morse-timed frame envelope with ${playbackFrames.length} bars.`
+        : 'Enter a single word using letters and numbers to build a Morse frame envelope.'
+      : selectedPreset.description;
+  const envelopeSourceLabel = patternSource === 'Morse' ? 'Generated word' : 'Active preset';
+  const envelopeSourceValue = patternSource === 'Morse' ? normalizedMorseWord || 'Waiting for word' : selectedPreset.name;
+  const isDenseEnvelope = playbackFrames.length > 18;
+  const presetCaption =
+    patternSource === 'Morse'
+      ? 'Preset selection stays available, but the active envelope is generated from your Morse word.'
+      : 'Pick a demo preset from the currently selected mode family.';
+
   const transportStatus = !isConnected
     ? 'Connect to a paired device to send the active pattern.'
-    : sendError
-      ? sendError
-      : isSending
-        ? 'Writing the frame payload to the haptic BLE characteristic.'
-        : 'The active preset is encoded as protocol v1, then written over BLE with response.';
+    : patternSource === 'Morse' && playbackFrames.length === 0
+      ? 'Enter a single word to build the Morse payload before sending.'
+      : sendError
+        ? sendError
+        : isSending
+          ? 'Writing the frame payload to the haptic BLE characteristic.'
+          : 'The active preset is encoded as protocol v1, then written over BLE with response.';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -268,9 +380,9 @@ export default function VibrationScreen() {
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Selected preset</Text>
-          <Text style={styles.summaryValue}>{selectedPreset.name}</Text>
-          <Text style={styles.summaryHint}>{selectedPreset.durationMs} ms total duration.</Text>
+          <Text style={styles.summaryLabel}>{patternSource === 'Morse' ? 'Pattern source' : 'Selected preset'}</Text>
+          <Text style={styles.summaryValue}>{sourceTitle}</Text>
+          <Text style={styles.summaryHint}>{sourceDetail}</Text>
         </View>
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Drive level</Text>
@@ -308,10 +420,41 @@ export default function VibrationScreen() {
           })}
         </View>
 
+        <View style={styles.sourceRow}>
+          {(['Preset', 'Morse'] as PatternSource[]).map((item) => {
+            const selected = item === patternSource;
+            return (
+              <TouchableOpacity
+                key={item}
+                style={[styles.sourceChip, selected && styles.sourceChipSelected]}
+                onPress={() => setPatternSource(item)}>
+                <Text style={[styles.sourceChipText, selected && styles.sourceChipTextSelected]}>{item}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {patternSource === 'Morse' ? (
+          <View style={styles.morseInputCard}>
+            <Text style={styles.morseInputLabel}>Single word</Text>
+            <TextInput
+              value={normalizedMorseWord}
+              onChangeText={(value) => setMorseWord(value)}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              maxLength={MORSE_MAX_WORD_LENGTH}
+              placeholder="HELLO"
+              placeholderTextColor="#91A095"
+              style={styles.morseInput}
+            />
+            <Text style={styles.morseHint}>Letters and numbers only. The frame bars below update from your word.</Text>
+          </View>
+        ) : null}
+
         <View style={styles.actionRow}>
           <TouchableOpacity
-            style={[styles.primaryButton, (!isConnected || isSending) && styles.primaryButtonDisabled]}
-            disabled={!isConnected || isSending}
+            style={[styles.primaryButton, (!isConnected || isSending || playbackFrames.length === 0) && styles.primaryButtonDisabled]}
+            disabled={!isConnected || isSending || playbackFrames.length === 0}
             onPress={startPreview}>
             <Ionicons name="play" size={16} color="#F7F0E8" />
             <Text style={styles.primaryButtonText}>{isSending ? 'Sending...' : isPlaying ? 'Send Again' : 'Send Effect'}</Text>
@@ -328,9 +471,7 @@ export default function VibrationScreen() {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Effect envelope</Text>
-            <Text style={styles.sectionCaption}>
-              Frame-by-frame amplitude preview for the active preset and intensity.
-            </Text>
+            <Text style={styles.sectionCaption}>{envelopeCaption}</Text>
           </View>
           <View style={styles.sectionBadge}>
             <Text style={styles.sectionBadgeText}>
@@ -340,25 +481,35 @@ export default function VibrationScreen() {
         </View>
 
         <View style={styles.waveCard}>
-          <View style={styles.waveBars}>
+          <View style={styles.waveMetaRow}>
+            <Text style={styles.waveMetaLabel}>{envelopeSourceLabel}</Text>
+            <Text style={styles.waveMetaValue}>{envelopeSourceValue}</Text>
+          </View>
+
+          <ScrollView
+            horizontal={isDenseEnvelope}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={[styles.waveBars, isDenseEnvelope && styles.waveBarsDense]}>
             {playbackFrames.map((value, index) => {
               const highlighted = isPlaying && index <= activeFrameIndex;
+              const silentFrame = value <= 0.01;
               return (
                 <View
-                  key={`${selectedPreset.id}-${index}`}
+                  key={`${patternSource === 'Morse' ? normalizedMorseWord || 'morse' : selectedPreset.id}-${index}`}
                   style={[
                     styles.waveBar,
+                    isDenseEnvelope && styles.waveBarDense,
                     {
-                      height: 24 + value * 90,
-                      opacity: highlighted ? 1 : 0.45,
-                      backgroundColor: highlighted ? '#153B2E' : '#AAB8AE',
+                      height: silentFrame ? 10 : 24 + value * 90,
+                      opacity: highlighted ? 1 : silentFrame ? 0.22 : 0.45,
+                      backgroundColor: highlighted ? '#153B2E' : silentFrame ? '#D6CCC0' : '#AAB8AE',
                     },
                   ]}
                 />
               );
             })}
-          </View>
-          <Text style={styles.waveDescription}>{selectedPreset.description}</Text>
+          </ScrollView>
+          <Text style={styles.waveDescription}>{envelopeDescription}</Text>
         </View>
       </View>
 
@@ -366,7 +517,7 @@ export default function VibrationScreen() {
         <View style={styles.sectionHeader}>
           <View>
             <Text style={styles.sectionTitle}>Presets</Text>
-            <Text style={styles.sectionCaption}>Pick a demo preset from the currently selected mode family.</Text>
+            <Text style={styles.sectionCaption}>{presetCaption}</Text>
           </View>
           <View style={styles.sectionBadge}>
             <Text style={styles.sectionBadgeText}>{availablePresets.length} OPTIONS</Text>
@@ -379,7 +530,11 @@ export default function VibrationScreen() {
             return (
               <TouchableOpacity
                 key={preset.id}
-                style={[styles.presetCard, selected && styles.presetCardSelected]}
+                style={[
+                  styles.presetCard,
+                  selected && styles.presetCardSelected,
+                  patternSource === 'Morse' && styles.presetCardMuted,
+                ]}
                 onPress={() => {
                   setSelectedPresetId(preset.id);
                   setElapsedMs(0);
@@ -606,6 +761,63 @@ const styles = StyleSheet.create({
   modeChipTextSelected: {
     color: '#F7F0E8',
   },
+  sourceRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 14,
+  },
+  sourceChip: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D8C8B9',
+    backgroundColor: '#FFF3E7',
+    alignItems: 'center',
+  },
+  sourceChipSelected: {
+    backgroundColor: '#2F5B4B',
+    borderColor: '#2F5B4B',
+  },
+  sourceChipText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#14251F',
+  },
+  sourceChipTextSelected: {
+    color: '#F7F0E8',
+  },
+  morseInputCard: {
+    marginTop: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#E1D5C9',
+    backgroundColor: '#F7EFE6',
+    padding: 14,
+  },
+  morseInputLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#355345',
+  },
+  morseInput: {
+    marginTop: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#D8C8B9',
+    backgroundColor: '#FFF9F2',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#14251F',
+  },
+  morseHint: {
+    marginTop: 10,
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#5F6B65',
+  },
   actionRow: {
     flexDirection: 'row',
     gap: 12,
@@ -658,6 +870,27 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     backgroundColor: '#F7EFE6',
   },
+  waveMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+  },
+  waveMetaLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#68736D',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  waveMetaValue: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#153B2E',
+  },
   waveBars: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -665,9 +898,19 @@ const styles = StyleSheet.create({
     gap: 8,
     height: 130,
   },
+  waveBarsDense: {
+    justifyContent: 'flex-start',
+    gap: 4,
+    minWidth: '100%',
+  },
   waveBar: {
     flex: 1,
     borderRadius: 999,
+  },
+  waveBarDense: {
+    flexGrow: 0,
+    flexShrink: 0,
+    width: 8,
   },
   waveDescription: {
     marginTop: 16,
@@ -689,6 +932,9 @@ const styles = StyleSheet.create({
   presetCardSelected: {
     backgroundColor: '#153B2E',
     borderColor: '#153B2E',
+  },
+  presetCardMuted: {
+    opacity: 0.6,
   },
   presetHeaderRow: {
     flexDirection: 'row',
@@ -741,48 +987,4 @@ const styles = StyleSheet.create({
   intensityTextSelected: {
     color: '#F7F0E8',
   },
-  sequenceCard: {
-    marginTop: 18,
-    padding: 18,
-    borderRadius: 22,
-    backgroundColor: '#F7EFE6',
-    gap: 12,
-  },
-  sequenceStep: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 8,
-  },
-  sequenceIndex: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    backgroundColor: '#153B2E',
-    color: '#F7F0E8',
-    fontWeight: '800',
-    overflow: 'hidden',
-  },
-  sequenceTextWrap: {
-    flex: 1,
-  },
-  sequenceName: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#14251F',
-  },
-  sequenceMeta: {
-    marginTop: 2,
-    fontSize: 13,
-    color: '#5F6B65',
-  },
-  sequenceFootnote: {
-    marginTop: 6,
-    fontSize: 13,
-    lineHeight: 19,
-    color: '#5F6B65',
-  },
 });
-
