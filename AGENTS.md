@@ -3,9 +3,9 @@
 ## Project overview
 
 This is the SensWear Expo/React Native mobile application. It uses Expo Router, strict
-TypeScript, React Native BLE PLX, and the vendored SensWear TypeScript SDK. It supports device
-pairing, live IMU/PPG/temperature/touch views, battery/power status, RGB LED control, haptic
-patterns, and PPG CSV export.
+TypeScript, React Native BLE PLX, and the official SensWear TypeScript SDK from npm. It supports
+device pairing, live IMU/PPG/temperature/touch views, battery/power status, RGB LED control,
+haptic patterns, and PPG CSV export.
 
 Use a native development build; BLE does not work in Expo Go.
 
@@ -19,7 +19,7 @@ Use a native development build; BLE does not work in Expo Go.
 - `constants/`: UI and capability constants.
 - `assets/`: images and fonts.
 - `android/`: generated/customized Android native project.
-- `vendor/senswear-<version>.tgz`: reproducible packed TypeScript SDK dependency.
+- `package.json` and `package-lock.json`: pinned npm dependencies, including the SensWear SDK.
 
 ## Setup and commands
 
@@ -61,19 +61,18 @@ dependency audit fixes with `--force` or perform Expo/React Native upgrades unle
 
 ## SDK dependency workflow
 
-`package.json` references `file:vendor/senswear-0.2.0.tgz`. Metro may reject an external
-filesystem junction, so keep the dependency as an actual packed file inside this repository.
+`package.json` references the official `senswear` package published on npm. Keep the dependency
+at an exact version so `package.json` and `package-lock.json` produce reproducible installs.
 
-After a TypeScript SDK change:
+To upgrade after a new SDK version is published:
 
-```powershell
-npm.cmd run build --prefix C:\Users\salamid1\Desktop\Projects\SenseWear\SDKs\TypeScript
-npm.cmd pack C:\Users\salamid1\Desktop\Projects\SenseWear\SDKs\TypeScript --pack-destination vendor
-npm.cmd install .\vendor\senswear-<version>.tgz
+```sh
+npm install senswear@<version> --save-exact
 ```
 
-Update the filename/version in `package.json`, lockfile, README, and this file when the SDK
-version changes. Verify `node_modules/senswear` is a normal installed directory, not a junction.
+Update the version in the README when it explicitly names a release. Verify that the lockfile
+resolves `senswear` from `https://registry.npmjs.org/`, not from a local file or filesystem
+junction.
 
 ## TypeScript and React conventions
 
@@ -129,5 +128,5 @@ version changes. Verify `node_modules/senswear` is a normal installed directory,
 - Subscriptions and resources are cleaned up.
 - `npx tsc --noEmit`, `npm run lint`, and `npx jest --runInBand` pass.
 - Metro export succeeds after SDK/dependency changes.
-- The vendored SDK tarball and lockfile are synchronized.
+- The SDK version and npm registry resolution are synchronized in the package files.
 - UI text accurately describes units, raw/derived data, and limitations.

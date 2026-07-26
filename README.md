@@ -1,5 +1,7 @@
 # SensWear Mobile App
 
+![SensWear mobile app screens](assets/images/senswear-mobile-app-screenshots.jpg)
+
 Expo/React Native application for pairing with a SensWear device, inspecting live sensor
 data, and controlling its LED and haptic outputs.
 
@@ -44,22 +46,16 @@ name begins with `Sens Wear`, `SensWear`, or `SenseWear`.
 
 ## SDK dependency
 
-The app uses the reproducible package at:
+The app uses the official
+[`senswear`](https://www.npmjs.com/package/senswear) TypeScript SDK published on npm:
 
-```text
-vendor/senswear-0.2.0.tgz
+```bash
+npm install senswear
 ```
 
-This avoids Metro following a filesystem junction outside the app root. When the SDK changes,
-build and repack it:
-
-```powershell
-npm.cmd run build --prefix C:\Users\salamid1\Desktop\Projects\SenseWear\SDKs\TypeScript
-npm.cmd pack C:\Users\salamid1\Desktop\Projects\SenseWear\SDKs\TypeScript --pack-destination vendor
-npm.cmd install .\vendor\senswear-0.2.0.tgz
-```
-
-If the SDK version changes, update the tarball name in `package.json`.
+The application pins the SDK version in `package.json` and `package-lock.json` for reproducible
+installs. Use `npm install senswear@<version> --save-exact` when upgrading to a newer published
+release.
 
 ## Architecture
 

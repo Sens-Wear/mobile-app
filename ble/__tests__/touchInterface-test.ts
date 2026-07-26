@@ -13,7 +13,7 @@ import {
   touchPositionPercent,
 } from '../touchAxis'
 
-describe('vendored touch BLE interface', () => {
+describe('published SDK touch BLE interface', () => {
   it('matches the firmware touch service UUIDs', () => {
     expect(TOUCH_SERVICE_UUID).toBe('33a5eb3f-0e13-424f-8b7a-942be0ee5cfc')
     expect(TOUCH_STATE_UUID).toBe('33a5eb42-0e13-424f-8b7a-942be0ee5cfc')
