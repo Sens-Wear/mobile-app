@@ -13,15 +13,14 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Progress from 'react-native-progress';
-import { decode as b64decode } from 'base-64';
 import { useBle } from '@/hooks/BleSessionProvider';
 import {
   isSensorModuleActive,
   isSensorModuleAvailable,
 } from '@/ble/daughterBoardState';
-import { POWER_UUIDS } from '@/ble/bleConstants';
 import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
 import type { SensorModuleKey } from '@/constants/DaughterBoardConstants';
+import { BATTERY_LEVEL_STATUS_UUID, BATTERY_LEVEL_UUID, ChargeState } from 'senswear';
 
 type SensorDefinition = {
   id: string;
@@ -86,37 +85,24 @@ const sensors: SensorDefinition[] = [
 const WEBSITE_URL = 'https://sens-wear.com';
 
 export default function SensorsScreen() {
-  const [gaugeInfo, setGaugeInfo] = useState({
-    state_of_charge_cdec: -1,
-  });
-  const [chargerInfo, setChargerInfo] = useState({
-    bCharging: false,
-  });
-  const { monitor, readCharacteristic, isConnected } = useBle();
+  const [batteryPercent, setBatteryPercent] = useState<number | null>(null);
+  const [isCharging, setIsCharging] = useState(false);
+  const { client, isConnected } = useBle();
   const daughterBoardState = useFocusedDaughterBoardState();
   const router = useRouter();
 
-  function base64ToBytes(base64: string) {
-    const binary = b64decode(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
   const batteryStatusColors = () => {
-    if (chargerInfo.bCharging) {
+    if (isCharging) {
       return '#305CDE';
     }
-    if (gaugeInfo.state_of_charge_cdec < 300) {
+    if (batteryPercent !== null && batteryPercent < 30) {
       return '#AF2B1E';
     }
     return '#1C7C54';
   };
 
   const progressFunction = (progress: number) => {
-    if (chargerInfo.bCharging) {
+    if (isCharging) {
       return 'CHG';
     }
     return `${Math.max(0, Math.floor(progress * 100))}%`;
@@ -124,105 +110,30 @@ export default function SensorsScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      if (!isConnected) {
+      if (!isConnected || !client) {
         return () => {};
       }
-
-      let isChargerActive = true;
-      let isGaugeActive = true;
-
-      const handleChargerUpdate = (c: { value: string | null }) => {
-        const v = c.value;
-        if (!v) return;
-        const bytes = base64ToBytes(v);
-        if (bytes.length < 4) return;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const flags = view.getUint32(0, true);
-        setChargerInfo({
-          bCharging: !!(flags & (1 << 6)),
+      let active = true;
+      void (async () => {
+        const [battery, power] = await Promise.all([client.battery.read(), client.power.read()]);
+        if (active) {
+          setBatteryPercent(battery.percent);
+          setIsCharging(power.chargeState === ChargeState.Charging);
+        }
+        await client.battery.subscribe((value) => {
+          if (active) setBatteryPercent(value.percent);
         });
-      };
-
-      const readChargerInitial = async () => {
-        try {
-          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.CHARGER_CHAR);
-          if (isChargerActive && c) handleChargerUpdate(c);
-        } catch (e) {
-          console.log(e);
-        }
-      };
-
-      readChargerInitial();
-
-      const chargerSub = monitor(
-        POWER_UUIDS.SERVICE_UUID,
-        POWER_UUIDS.CHARGER_CHAR,
-        handleChargerUpdate,
-        (e) => {
-          console.log(e);
-        }
-      );
-
-      const handleGaugeUpdate = (c: { value: string | null }) => {
-        const v = c.value;
-        if (!v) return;
-        const bytes = base64ToBytes(v);
-        if (bytes.length < 16) return;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        let o = 0;
-
-        const i16 = () => {
-          const value = view.getInt16(o, true);
-          o += 2;
-          return value;
-        };
-        const u16 = () => {
-          const value = view.getUint16(o, true);
-          o += 2;
-          return value;
-        };
-
-        i16();
-        u16();
-        i16();
-        i16();
-        const state_of_charge_cdec = u16();
-        u16();
-        u16();
-        u16();
-
-        setGaugeInfo({
-          state_of_charge_cdec,
+        await client.power.subscribe((value) => {
+          if (active) setIsCharging(value.chargeState === ChargeState.Charging);
         });
-      };
-
-      const readGaugeInitial = async () => {
-        try {
-          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.GAUGE_CHAR);
-          if (isGaugeActive && c) handleGaugeUpdate(c);
-        } catch (e) {
-          console.log(e);
-        }
-      };
-
-      readGaugeInitial();
-
-      const gaugeSub = monitor(
-        POWER_UUIDS.SERVICE_UUID,
-        POWER_UUIDS.GAUGE_CHAR,
-        handleGaugeUpdate,
-        (e) => {
-          console.log(e);
-        }
-      );
+      })().catch(console.error);
 
       return () => {
-        isChargerActive = false;
-        isGaugeActive = false;
-        chargerSub.remove();
-        gaugeSub.remove();
+        active = false;
+        void client.stopNotify(BATTERY_LEVEL_UUID);
+        void client.stopNotify(BATTERY_LEVEL_STATUS_UUID);
       };
-    }, [isConnected, monitor, readCharacteristic])
+    }, [isConnected, client])
   );
 
   const handleSelectSensor = (pathName: string) => {
@@ -233,14 +144,8 @@ export default function SensorsScreen() {
     await Linking.openURL(WEBSITE_URL);
   };
 
-  const batteryProgress =
-    gaugeInfo.state_of_charge_cdec > -1
-      ? Math.min(1, Math.max(0, gaugeInfo.state_of_charge_cdec / 1000))
-      : 0;
-  const batteryLabel =
-    gaugeInfo.state_of_charge_cdec > -1
-      ? `${Math.floor(gaugeInfo.state_of_charge_cdec / 10)}% battery`
-      : 'Battery status pending';
+  const batteryProgress = batteryPercent === null ? 0 : batteryPercent / 100;
+  const batteryLabel = batteryPercent === null ? 'Battery status pending' : `${batteryPercent}% battery`;
   const readyModulesLabel = `${daughterBoardState.readyModuleCount} ${
     daughterBoardState.readyModuleCount === 1 ? 'module' : 'modules'
   } ready`;

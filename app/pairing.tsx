@@ -13,57 +13,40 @@ import { useRouter } from 'expo-router';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { bleManager } from '@/ble/bleManager';
 import { useBle } from '../hooks/BleSessionProvider';
+import type { DiscoveredDevice } from 'senswear';
 
 export default function DevicesScreen() {
-  const { pair, error } = useBle();
-  const [devices, setDevices] = useState([]);
+  const { pair, error, discover } = useBle();
+  const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [isPairing, setIsPairing] = useState(false);
   const navigation = useNavigation();
   const router = useRouter();
 
-  const onDeviceFound = (device) => {
-    if (!device?.id || (!device?.localName && !device?.name)) return;
-
-    setDevices((prevDevices) => {
-      if (prevDevices.some((d) => d.id === device.id)) {
-        return prevDevices;
-      }
-
-      if (prevDevices.length === 0) {
-        setLoading(false);
-      }
-
-      return [...prevDevices, device];
-    });
-  };
-
   useFocusEffect(
     React.useCallback(() => {
-      requestBluetoothPermission();
-      const subscription = bleManager.onStateChange((state) => {
-        if (state === 'PoweredOn') {
-          scanAndConnect();
-          subscription.remove();
+      let active = true;
+      setLoading(true);
+      setDevices([]);
+      void (async () => {
+        const granted = await requestBluetoothPermission();
+        if (!granted) {
+          if (active) setLoading(false);
+          return;
         }
-      }, true);
+        try {
+          const found = await discover(5_000);
+          if (active) setDevices(found);
+        } finally {
+          if (active) setLoading(false);
+        }
+      })();
       return () => {
-        subscription.remove();
-        bleManager.stopDeviceScan();
+        active = false;
       };
-    }, [bleManager])
+    }, [discover])
   );
-
-  function scanAndConnect() {
-    bleManager.startDeviceScan(null, null, (scanError, device) => {
-      onDeviceFound(device);
-      if (scanError) {
-        return;
-      }
-    });
-  }
 
   const requestBluetoothPermission = async () => {
     if (Platform.OS === 'ios') {
@@ -89,12 +72,10 @@ export default function DevicesScreen() {
       }
     }
 
-    this.showErrorToast('Permission have not been granted');
-
     return false;
   };
 
-  const handleSelectDevice = async (device) => {
+  const handleSelectDevice = async (device: DiscoveredDevice) => {
     setIsPairing(true);
     const ret = await pair(device.id);
     if (ret) {
@@ -205,7 +186,7 @@ export default function DevicesScreen() {
               <Ionicons name="watch-outline" size={20} color="#153B2E" />
             </View>
             <View style={styles.deviceTextWrap}>
-              <Text style={styles.deviceName}>{item.name ?? item.localName ?? 'Unknown'}</Text>
+              <Text style={styles.deviceName}>{item.name ?? 'Unknown'}</Text>
               <Text style={styles.deviceId}>{item.id}</Text>
             </View>
             <View style={styles.deviceAction}>

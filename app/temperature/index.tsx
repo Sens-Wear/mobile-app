@@ -5,9 +5,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
-import { decode as b64decode } from 'base-64';
 import Legend from '@/components/ui/Legend';
-import { TEMPERATURE_UUIDS } from '@/ble/bleConstants';
 import { useBle } from '@/hooks/BleSessionProvider';
 
 const MAX_LENGTH = 100;
@@ -17,7 +15,7 @@ const CHART_WIDTH = Dimensions.get('window').width - 80;
 type ChartPoint = { value: number };
 
 export default function TemperatureScreen() {
-  const { isConnected, monitor, readCharacteristic } = useBle();
+  const { isConnected, client } = useBle();
   const [temperatureData, setTemperatureData] = useState<ChartPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
@@ -46,33 +44,9 @@ export default function TemperatureScreen() {
     };
   }, [temperatureData]);
 
-  function base64ToBytes(base64: string) {
-    const binary = b64decode(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  function readInt32LE(bytes: Uint8Array, offset: number) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return view.getInt32(offset, true);
-  }
-
-  function parseTemperatureValue(rawValue: string | null) {
-    if (!rawValue) return null;
-    const bytes = base64ToBytes(rawValue);
-    if (bytes.length < 4) return null;
-
-    const temperature = readInt32LE(bytes, 0) / 1000;
-    console.log(temperature);
-    return temperature;
-  }
-
   useFocusEffect(
     React.useCallback(() => {
-      if (!isConnected) {
+      if (!isConnected || !client) {
         setLoading(false);
         setTemperatureData([]);
         return () => {};
@@ -89,38 +63,18 @@ export default function TemperatureScreen() {
         }
       };
 
-      const handleTemperatureUpdate = (c: { value: string | null }) => {
-        pushTemperature(parseTemperatureValue(c.value));
-      };
-
-      const readTemperatureInitial = async () => {
-        try {
-          const c = await readCharacteristic(
-            TEMPERATURE_UUIDS.SERVICE_UUID,
-            TEMPERATURE_UUIDS.TEMPERATURE_CHANNEL_CHAR
-          );
-          if (isActive && c) {
-            handleTemperatureUpdate(c);
-          }
-        } catch (e) {
-          console.log(e);
-        } finally {
-          if (isActive) {
-            setLoading(false);
-          }
+      void (async () => {
+        const intervalSeconds = await client.temperature.readMeasurementInterval();
+        if (intervalSeconds === 0) {
+          await client.temperature.setMeasurementInterval(60);
         }
-      };
-
-      readTemperatureInitial();
-
-      const temperatureSub = monitor(
-        TEMPERATURE_UUIDS.SERVICE_UUID,
-        TEMPERATURE_UUIDS.TEMPERATURE_CHANNEL_CHAR,
-        handleTemperatureUpdate,
-        (e) => {
-          console.log(e);
-        }
-      );
+        await client.temperature.subscribe((sample) => {
+          if (isActive) pushTemperature(sample.temperatureC);
+        });
+      })().catch((error) => {
+        console.error(error);
+        if (isActive) setLoading(false);
+      });
 
       const interval = setInterval(() => {
         const batch = temperatureBufferRef.current.splice(0);
@@ -139,11 +93,11 @@ export default function TemperatureScreen() {
 
       return () => {
         isActive = false;
-        temperatureSub.remove();
+        void client.temperature.unsubscribe();
         clearInterval(interval);
         temperatureBufferRef.current = [];
       };
-    }, [isConnected, monitor, readCharacteristic])
+    }, [isConnected, client])
   );
 
   useEffect(() => {

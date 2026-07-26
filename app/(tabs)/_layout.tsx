@@ -30,14 +30,14 @@ export default function TabLayout() {
         name="sensors"
         options={{
           title: 'Sensors',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="sensors" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="sensor" color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="settings" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gearshape.fill" color={color} />,
         }}
       />
     </Tabs>

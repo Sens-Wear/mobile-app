@@ -1,71 +1,34 @@
-import React from 'react';
-import { useFocusEffect } from '@react-navigation/native';
-import { POWER_UUIDS } from '@/ble/bleConstants';
-import {
-  DEFAULT_DAUGHTER_BOARD_STATE,
-  parseDaughterBoardState,
-} from '@/ble/daughterBoardState';
+import { useMemo } from 'react';
+
+import type { DaughterBoardState } from '@/ble/daughterBoardState';
 import { useBle } from './BleSessionProvider';
 
+const AVAILABLE_STATE: DaughterBoardState = {
+  connectedMask: 0x0f,
+  activeBoardEnum: null,
+  activeBoardKey: null,
+  activeBoardName: null,
+  regulatorMv: 0,
+  flags: 0,
+  connectedBoards: ['PPG', 'Temperature', 'Touch', 'Haptic'],
+  connectedBoardNames: ['PPG', 'Temperature', 'Touch', 'Haptic'],
+  readyModuleCount: 6,
+};
+
+const DISCONNECTED_STATE: DaughterBoardState = {
+  ...AVAILABLE_STATE,
+  connectedMask: 0,
+  connectedBoards: [],
+  connectedBoardNames: [],
+  readyModuleCount: 0,
+};
+
+/**
+ * The current firmware no longer publishes the legacy daughter-board status characteristic.
+ * Capability is represented by the SDK modules; while connected, all advertised app modules
+ * are made available and an individual operation reports a GATT error if hardware is absent.
+ */
 export function useFocusedDaughterBoardState() {
-  const { isConnected, monitor, readCharacteristic } = useBle();
-  const [daughterBoardState, setDaughterBoardState] = React.useState(
-    DEFAULT_DAUGHTER_BOARD_STATE
-  );
-
-  useFocusEffect(
-    React.useCallback(() => {
-      if (!isConnected) {
-        setDaughterBoardState(DEFAULT_DAUGHTER_BOARD_STATE);
-        return () => {};
-      }
-
-      let isActive = true;
-
-      const handleUpdate = (c: { value: string | null }) => {
-        const nextState = parseDaughterBoardState(c.value);
-        if (isActive && nextState) {
-          setDaughterBoardState(nextState);
-        }
-      };
-
-      const readInitial = async () => {
-        try {
-          const characteristic = await readCharacteristic(
-            POWER_UUIDS.SERVICE_UUID,
-            POWER_UUIDS.DAUGHTER_BOARD_CHAR
-          );
-          if (isActive && characteristic) {
-            handleUpdate(characteristic);
-          }
-        } catch (error) {
-          console.log(error);
-        }
-      };
-
-      readInitial();
-
-      const subscription = monitor(
-        POWER_UUIDS.SERVICE_UUID,
-        POWER_UUIDS.DAUGHTER_BOARD_CHAR,
-        handleUpdate,
-        error => {
-          console.log(error);
-        }
-      );
-
-      return () => {
-        isActive = false;
-        subscription.remove();
-      };
-    }, [isConnected, monitor, readCharacteristic])
-  );
-
-  React.useEffect(() => {
-    if (!isConnected) {
-      setDaughterBoardState(DEFAULT_DAUGHTER_BOARD_STATE);
-    }
-  }, [isConnected]);
-
-  return daughterBoardState;
+  const { isConnected } = useBle();
+  return useMemo(() => isConnected ? AVAILABLE_STATE : DISCONNECTED_STATE, [isConnected]);
 }

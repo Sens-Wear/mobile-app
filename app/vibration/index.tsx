@@ -3,98 +3,78 @@ import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { encode as b64encode } from 'base-64';
-import { HAPTIC_UUIDS } from '@/ble/bleConstants';
+import type { HapticPattern } from 'senswear';
+import {
+  HAPTIC_PREVIEW_FRAME_MS,
+  buildHapticPattern,
+} from '@/ble/hapticPatterns';
 import { useBle } from '@/hooks/BleSessionProvider';
 
-type DemoMode = 'Library' | 'RTP' | 'Sequence';
+type DemoMode = 'Pulse' | 'Pattern';
 type PatternSource = 'Preset' | 'Morse';
 
 type Preset = {
   id: string;
   name: string;
   family: DemoMode;
-  effectId: number | null;
-  durationMs: number;
   description: string;
   amplitudes: number[];
 };
 
-type HapticFrame = {
-  durationMs: number;
-  intensity: number;
-};
-
-const FRAME_MS = 80;
-const HAPTIC_PROTOCOL_VERSION = 1;
 const MORSE_UNIT_FRAMES = 1;
 const MORSE_DASH_FRAMES = MORSE_UNIT_FRAMES * 3;
 const MORSE_SYMBOL_GAP_FRAMES = MORSE_UNIT_FRAMES;
 const MORSE_LETTER_GAP_FRAMES = MORSE_UNIT_FRAMES * 3;
-const MORSE_MAX_WORD_LENGTH = 16;
+const MORSE_MAX_WORD_LENGTH = 3;
 
 const PRESETS: Preset[] = [
   {
     id: 'strong-click',
-    name: 'Strong Click',
-    family: 'Library',
-    effectId: 1,
-    durationMs: 160,
-    description: 'Short confirmation pulse with a crisp leading edge.',
-    amplitudes: [0.18, 0.95, 0.52, 0.12],
+    name: 'Strong Pulse',
+    family: 'Pulse',
+    description: 'One 160 ms vibration sent with the SDK vibrate API.',
+    amplitudes: [1, 1],
   },
   {
-    id: 'double-click',
-    name: 'Double Click',
-    family: 'Library',
-    effectId: 10,
-    durationMs: 260,
-    description: 'Two separated impulses for call-to-action feedback.',
-    amplitudes: [0.14, 0.9, 0.18, 0.1, 0.12, 0.82, 0.2],
+    id: 'soft-pulse',
+    name: 'Soft Pulse',
+    family: 'Pulse',
+    description: 'One gentle 240 ms vibration sent with the SDK vibrate API.',
+    amplitudes: [0.55, 0.55, 0.55],
   },
   {
     id: 'ramp-up',
     name: 'Ramp Up',
-    family: 'RTP',
-    effectId: null,
-    durationMs: 480,
-    description: 'Real-time amplitude sweep from subtle to assertive.',
+    family: 'Pattern',
+    description: 'Multi-frame RTP amplitude sweep from subtle to assertive.',
     amplitudes: [0.12, 0.2, 0.32, 0.46, 0.58, 0.72, 0.86, 1],
   },
   {
     id: 'heartbeat',
     name: 'Heartbeat',
-    family: 'Sequence',
-    effectId: null,
-    durationMs: 640,
-    description: 'Two-beat sequence useful for alarms or guided routines.',
-    amplitudes: [0.12, 0.68, 0.14, 0.08, 0.1, 0.92, 0.42, 0.14],
+    family: 'Pattern',
+    description: 'Two-beat RTP frame pattern useful for alerts and guided routines.',
+    amplitudes: [0.68, 0.68, 0, 0, 0.92, 0.92, 0.42, 0],
   },
   {
     id: 'buzz-alert',
     name: 'Buzz Alert',
-    family: 'Sequence',
-    effectId: null,
-    durationMs: 720,
-    description: 'Repeated medium pulses for attention-grabbing notifications.',
-    amplitudes: [0.42, 0.52, 0.44, 0.54, 0.48, 0.56, 0.42, 0.5],
+    family: 'Pattern',
+    description: 'Repeated RTP pulses for attention-grabbing notifications.',
+    amplitudes: [0.56, 0.56, 0, 0.56, 0.56, 0, 0.56, 0.56],
   },
 ];
 
 const INTENSITY_LEVELS = [0.25, 0.5, 0.75, 1];
 
 const MODE_COPY: Record<DemoMode, { title: string; subtitle: string }> = {
-  Library: {
-    title: 'Library Playback',
-    subtitle: 'Send compact confirmation patterns over BLE with a fast event-style envelope.',
+  Pulse: {
+    title: 'Single Pulse',
+    subtitle: 'Send one duration and intensity through the SDK haptic.vibrate API.',
   },
-  RTP: {
-    title: 'Real-Time Amplitude',
-    subtitle: 'Scale the outgoing frame intensities before they are written to the haptic service.',
-  },
-  Sequence: {
-    title: 'Sequence Builder',
-    subtitle: 'Chain multiple pulses into a richer BLE-driven routine for alerts and coaching cues.',
+  Pattern: {
+    title: 'RTP Pattern',
+    subtitle: 'Send a firmware-compatible multi-frame pattern through the SDK haptic.play API.',
   },
 };
 
@@ -137,32 +117,6 @@ const MORSE_CODE_MAP: Record<string, string> = {
   '9': '----.',
 };
 
-function clampToByte(value: number) {
-  return Math.max(0, Math.min(255, Math.round(value)));
-}
-
-function framesToBase64(frames: HapticFrame[]) {
-  const bytes = new Uint8Array(4 + frames.length * 3);
-  const view = new DataView(bytes.buffer);
-
-  bytes[0] = HAPTIC_PROTOCOL_VERSION;
-  bytes[1] = 0;
-  view.setUint16(2, frames.length, true);
-
-  frames.forEach((frame, index) => {
-    const offset = 4 + index * 3;
-    view.setUint16(offset, frame.durationMs, true);
-    bytes[offset + 2] = frame.intensity;
-  });
-
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return b64encode(binary);
-}
-
 function buildMorseFrames(word: string) {
   const symbols = word
     .split('')
@@ -197,9 +151,9 @@ function buildMorseFrames(word: string) {
 }
 
 export default function VibrationScreen() {
-  const { isConnected, writeWithResponse } = useBle();
+  const { isConnected, client } = useBle();
   const router = useRouter();
-  const [mode, setMode] = useState<DemoMode>('Library');
+  const [mode, setMode] = useState<DemoMode>('Pulse');
   const [patternSource, setPatternSource] = useState<PatternSource>('Preset');
   const [selectedPresetId, setSelectedPresetId] = useState('strong-click');
   const [morseWord, setMorseWord] = useState('');
@@ -230,16 +184,16 @@ export default function VibrationScreen() {
     [intensity, morsePattern.frames, patternSource, selectedPreset]
   );
 
-  const hapticFrames = useMemo<HapticFrame[]>(
-    () =>
-      playbackFrames.map((value) => ({
-        durationMs: FRAME_MS,
-        intensity: clampToByte(value * 255),
-      })),
+  const hapticPattern = useMemo<HapticPattern | null>(
+    () => buildHapticPattern(playbackFrames, 1),
     [playbackFrames]
   );
+  const controlsLocked = isPlaying || isSending;
 
-  const activeFrameIndex = Math.min(playbackFrames.length - 1, Math.floor(elapsedMs / FRAME_MS));
+  const activeFrameIndex = Math.min(
+    playbackFrames.length - 1,
+    Math.floor(elapsedMs / HAPTIC_PREVIEW_FRAME_MS)
+  );
 
   useEffect(() => {
     setSelectedPresetId((current) => {
@@ -248,29 +202,30 @@ export default function VibrationScreen() {
       }
       return availablePresets[0]?.id ?? current;
     });
+    if (mode === 'Pulse') setPatternSource('Preset');
     setIsPlaying(false);
     setElapsedMs(0);
-  }, [availablePresets]);
+  }, [availablePresets, mode]);
 
   useEffect(() => {
     if (!isPlaying) {
       return;
     }
 
-    const totalDuration = playbackFrames.length * FRAME_MS;
+    const totalDuration = hapticPattern?.totalDurationMs ?? 0;
     const interval = setInterval(() => {
       setElapsedMs((current) => {
-        const next = current + FRAME_MS;
+        const next = current + HAPTIC_PREVIEW_FRAME_MS;
         if (next >= totalDuration) {
           setIsPlaying(false);
           return totalDuration;
         }
         return next;
       });
-    }, FRAME_MS);
+    }, HAPTIC_PREVIEW_FRAME_MS);
 
     return () => clearInterval(interval);
-  }, [isPlaying, playbackFrames.length]);
+  }, [hapticPattern, isPlaying]);
 
   useEffect(() => {
     if (isConnected) {
@@ -287,7 +242,7 @@ export default function VibrationScreen() {
   }, [normalizedMorseWord, patternSource]);
 
   const startPreview = async () => {
-    if (!isConnected || isSending || playbackFrames.length === 0) {
+    if (!isConnected || !client || controlsLocked || !hapticPattern) {
       return;
     }
 
@@ -295,8 +250,12 @@ export default function VibrationScreen() {
     setIsSending(true);
 
     try {
-      const payload = framesToBase64(hapticFrames);
-      await writeWithResponse(HAPTIC_UUIDS.SERVICE_UUID, HAPTIC_UUIDS.HAPTIC_PATTER_CHAR, payload);
+      if (mode === 'Pulse' && hapticPattern.frames.length === 1) {
+        const [frame] = hapticPattern.frames;
+        await client.haptic.vibrate(frame.durationMs, frame.intensity);
+      } else {
+        await client.haptic.play(hapticPattern);
+      }
       setElapsedMs(0);
       setIsPlaying(true);
     } catch (error) {
@@ -317,9 +276,9 @@ export default function VibrationScreen() {
   const sourceDetail =
     patternSource === 'Morse'
       ? normalizedMorseWord
-        ? `${normalizedMorseWord.length} characters, ${playbackFrames.length * FRAME_MS} ms total duration.`
+        ? `${normalizedMorseWord.length} characters, ${hapticPattern?.totalDurationMs ?? 0} ms total duration.`
         : 'Enter one word to generate a Morse envelope.'
-      : `${selectedPreset.durationMs} ms total duration.`;
+      : `${hapticPattern?.totalDurationMs ?? 0} ms total duration.`;
   const envelopeCaption = 'Frame-by-frame amplitude preview for the active pattern and intensity.';
   const envelopeDescription =
     patternSource === 'Morse'
@@ -333,7 +292,7 @@ export default function VibrationScreen() {
   const presetCaption =
     patternSource === 'Morse'
       ? 'Preset selection stays available, but the active envelope is generated from your Morse word.'
-      : 'Pick a demo preset from the currently selected mode family.';
+      : 'Pick a firmware-compatible preset for the selected SDK operation.';
 
   const transportStatus = !isConnected
     ? 'Connect to a paired device to send the active pattern.'
@@ -342,8 +301,12 @@ export default function VibrationScreen() {
       : sendError
         ? sendError
         : isSending
-          ? 'Writing the frame payload to the haptic BLE characteristic.'
-          : 'The active preset is encoded as protocol v1, then written over BLE with response.';
+          ? 'Writing the SDK-encoded haptic payload over BLE.'
+          : isPlaying
+            ? 'Playback is active. Wait for it to finish before sending another command.'
+            : mode === 'Pulse'
+              ? 'Ready to send one pulse with haptic.vibrate().'
+              : 'Ready to send a protocol-v1 RTP pattern with haptic.play().';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -407,32 +370,45 @@ export default function VibrationScreen() {
         </View>
 
         <View style={styles.modeRow}>
-          {(['Library', 'RTP', 'Sequence'] as DemoMode[]).map((item) => {
+          {(['Pulse', 'Pattern'] as DemoMode[]).map((item) => {
             const selected = item === mode;
             return (
               <TouchableOpacity
                 key={item}
-                style={[styles.modeChip, selected && styles.modeChipSelected]}
-                onPress={() => setMode(item)}>
+                style={[
+                  styles.modeChip,
+                  selected && styles.modeChipSelected,
+                  controlsLocked && styles.controlDisabled,
+                ]}
+                disabled={controlsLocked}
+                onPress={() => {
+                  setMode(item);
+                  if (item === 'Pulse') setPatternSource('Preset');
+                }}>
                 <Text style={[styles.modeChipText, selected && styles.modeChipTextSelected]}>{item}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        <View style={styles.sourceRow}>
+        {mode === 'Pattern' && <View style={styles.sourceRow}>
           {(['Preset', 'Morse'] as PatternSource[]).map((item) => {
             const selected = item === patternSource;
             return (
               <TouchableOpacity
                 key={item}
-                style={[styles.sourceChip, selected && styles.sourceChipSelected]}
+                style={[
+                  styles.sourceChip,
+                  selected && styles.sourceChipSelected,
+                  controlsLocked && styles.controlDisabled,
+                ]}
+                disabled={controlsLocked}
                 onPress={() => setPatternSource(item)}>
                 <Text style={[styles.sourceChipText, selected && styles.sourceChipTextSelected]}>{item}</Text>
               </TouchableOpacity>
             );
           })}
-        </View>
+        </View>}
 
         {patternSource === 'Morse' ? (
           <View style={styles.morseInputCard}>
@@ -442,8 +418,9 @@ export default function VibrationScreen() {
               onChangeText={(value) => setMorseWord(value)}
               autoCapitalize="characters"
               autoCorrect={false}
+              editable={!controlsLocked}
               maxLength={MORSE_MAX_WORD_LENGTH}
-              placeholder="HELLO"
+              placeholder="SOS"
               placeholderTextColor="#91A095"
               style={styles.morseInput}
             />
@@ -453,13 +430,18 @@ export default function VibrationScreen() {
 
         <View style={styles.actionRow}>
           <TouchableOpacity
-            style={[styles.primaryButton, (!isConnected || isSending || playbackFrames.length === 0) && styles.primaryButtonDisabled]}
-            disabled={!isConnected || isSending || playbackFrames.length === 0}
+            style={[styles.primaryButton, (!isConnected || controlsLocked || !hapticPattern) && styles.primaryButtonDisabled]}
+            disabled={!isConnected || controlsLocked || !hapticPattern}
             onPress={startPreview}>
             <Ionicons name="play" size={16} color="#F7F0E8" />
-            <Text style={styles.primaryButtonText}>{isSending ? 'Sending...' : isPlaying ? 'Send Again' : 'Send Effect'}</Text>
+            <Text style={styles.primaryButtonText}>
+              {isSending ? 'Sending...' : isPlaying ? 'Playing...' : 'Send Effect'}
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryButton} onPress={resetPreview}>
+          <TouchableOpacity
+            style={[styles.secondaryButton, controlsLocked && styles.controlDisabled]}
+            disabled={controlsLocked}
+            onPress={resetPreview}>
             <Text style={styles.secondaryButtonText}>Reset Preview</Text>
           </TouchableOpacity>
         </View>
@@ -534,7 +516,9 @@ export default function VibrationScreen() {
                   styles.presetCard,
                   selected && styles.presetCardSelected,
                   patternSource === 'Morse' && styles.presetCardMuted,
+                  controlsLocked && styles.controlDisabled,
                 ]}
+                disabled={controlsLocked}
                 onPress={() => {
                   setSelectedPresetId(preset.id);
                   setElapsedMs(0);
@@ -543,11 +527,11 @@ export default function VibrationScreen() {
                 <View style={styles.presetHeaderRow}>
                   <Text style={[styles.presetName, selected && styles.presetNameSelected]}>{preset.name}</Text>
                   <Text style={[styles.presetDuration, selected && styles.presetDurationSelected]}>
-                    {preset.durationMs} ms
+                    {preset.amplitudes.length * HAPTIC_PREVIEW_FRAME_MS} ms
                   </Text>
                 </View>
                 <Text style={[styles.presetDescription, selected && styles.presetDescriptionSelected]}>
-                  {preset.effectId === null ? 'Custom envelope' : `Effect ID ${preset.effectId}`}
+                  {preset.description}
                 </Text>
               </TouchableOpacity>
             );
@@ -574,7 +558,12 @@ export default function VibrationScreen() {
             return (
               <TouchableOpacity
                 key={level}
-                style={[styles.intensityButton, selected && styles.intensityButtonSelected]}
+                style={[
+                  styles.intensityButton,
+                  selected && styles.intensityButtonSelected,
+                  controlsLocked && styles.controlDisabled,
+                ]}
+                disabled={controlsLocked}
                 onPress={() => setIntensity(level)}>
                 <Text style={[styles.intensityText, selected && styles.intensityTextSelected]}>
                   {Math.round(level * 100)}%
@@ -589,6 +578,9 @@ export default function VibrationScreen() {
 }
 
 const styles = StyleSheet.create({
+  controlDisabled: {
+    opacity: 0.5,
+  },
   container: {
     flex: 1,
     backgroundColor: '#F5EFE8',

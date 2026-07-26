@@ -7,35 +7,23 @@ import { useSharedValue } from 'react-native-reanimated';
 import type { ColorFormatsObject } from 'reanimated-color-picker';
 import ColorPicker, { HueSlider, OpacitySlider, Panel3 } from 'reanimated-color-picker';
 import { colorPickerStyle } from '@/components/ColorPickerStyle';
-import { encode as b64encode } from 'base-64';
-import { LED_UUIDS } from '@/ble/bleConstants';
 import { useBle } from '@/hooks/BleSessionProvider';
 
 export default function LEDScreen() {
-  const { writeWithResponse } = useBle();
+  const { client, isConnected } = useBle();
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const [resultColor, setResultColor] = useState('#0000ff');
   const currentColor = useSharedValue('#0000ff');
   const [isLEDOn, setIsLEDOn] = useState(false);
 
-  function colorHexToRGBWUint32LE(hex: string, white = 0) {
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    const w = white & 0xff;
-    const bytes = Uint8Array.from([r, g, b, w]);
-    return b64encode(String.fromCharCode(...bytes));
-  }
-
   const turnOnOff = async () => {
+    if (!client) return;
     if (isLEDOn) {
-      const base64Color = colorHexToRGBWUint32LE('#000000');
-      await writeWithResponse(LED_UUIDS.SERVICE_UUID, LED_UUIDS.COLOR_CHAR, base64Color);
+      await client.led.off();
       setIsLEDOn(false);
     } else {
-      const base64Color = colorHexToRGBWUint32LE(currentColor.value);
-      await writeWithResponse(LED_UUIDS.SERVICE_UUID, LED_UUIDS.COLOR_CHAR, base64Color);
+      await client.led.set(currentColor.value);
       setIsLEDOn(true);
     }
   };
@@ -50,16 +38,14 @@ export default function LEDScreen() {
     if (!isLEDOn) {
       return;
     }
-    const base64Color = colorHexToRGBWUint32LE(color.hex);
-    await writeWithResponse(LED_UUIDS.SERVICE_UUID, LED_UUIDS.COLOR_CHAR, base64Color);
+    await client?.led.set(color.hex);
   };
 
   useEffect(() => {
     let isMounted = true;
     (async () => {
       try {
-        const base64Color = colorHexToRGBWUint32LE('#000000');
-        await writeWithResponse(LED_UUIDS.SERVICE_UUID, LED_UUIDS.COLOR_CHAR, base64Color);
+        if (client && isConnected) await client.led.off();
       } finally {
         if (isMounted) {
           setIsLEDOn(false);
@@ -70,7 +56,7 @@ export default function LEDScreen() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [client, isConnected]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -99,7 +85,7 @@ export default function LEDScreen() {
         <View style={styles.heroMetaRow}>
           <View style={styles.metaPill}>
             <Ionicons name="color-palette-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>RGBW output</Text>
+            <Text style={styles.metaPillText}>RGB output</Text>
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="radio-outline" size={15} color="#153B2E" />

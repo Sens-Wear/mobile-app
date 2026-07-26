@@ -13,12 +13,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
-import { decode as b64decode } from 'base-64';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import Legend from '@/components/ui/Legend';
-import { PPG_UUIDS } from '@/ble/bleConstants';
 import { useBle } from '@/hooks/BleSessionProvider';
+import { PPG_GREEN_UUID, PPG_INFRARED_UUID, PPG_RED_UUID } from 'senswear';
 
 const MAX_LENGTH = 500;
 const BUFFER_LIMIT = 500;
@@ -26,19 +25,19 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_WIDTH = SCREEN_WIDTH - 80;
 
 export default function DevicesScreen() {
-  const { monitor } = useBle();
-  const [rawRedData, setRawRedData] = useState([]);
-  const [rawIRData, setRawIRData] = useState([]);
-  const [rawGreenData, setRawGreenData] = useState([]);
+  const { client, isConnected } = useBle();
+  const [rawRedData, setRawRedData] = useState<{ value: number }[]>([]);
+  const [rawIRData, setRawIRData] = useState<{ value: number }[]>([]);
+  const [rawGreenData, setRawGreenData] = useState<{ value: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [isShareAvailable, setIsShareAvailable] = useState(false);
   const lastRedScrollRef = useRef(0);
   const lastIRScrollRef = useRef(0);
   const lastGreenScrollRef = useRef(0);
   const router = useRouter();
-  const rawRedDataChartRef = useRef(null);
-  const rawIRDataChartRef = useRef(null);
-  const rawGreenDataChartRef = useRef(null);
+  const rawRedDataChartRef = useRef<any>(null);
+  const rawIRDataChartRef = useRef<any>(null);
+  const rawGreenDataChartRef = useRef<any>(null);
   const rawGreenBufferRef = useRef<{ green: number }[]>([]);
   const csvRowsRef = useRef<string[]>([]);
   const csvUriRef = useRef<string | null>(null);
@@ -73,115 +72,42 @@ export default function DevicesScreen() {
   const irRange = useMemo(() => getPaddedRange(rawIRData), [rawIRData]);
   const greenRange = useMemo(() => getPaddedRange(rawGreenData), [rawGreenData]);
 
-  function base64ToBytes(base64: string) {
-    const binary = b64decode(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  function readUint32LE(bytes: Uint8Array, offset: number) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return view.getUint32(offset, true);
-  }
-
-  function readUint64LEAsNumber(bytes: Uint8Array, offset: number) {
-    const low = readUint32LE(bytes, offset);
-    const high = readUint32LE(bytes, offset + 4);
-    return high * 0x100000000 + low;
-  }
-
-  function parsePpgSampleBatchNotification(bytes: Uint8Array) {
-    const SAMPLE_SIZE_BYTES = 12;
-    const sampleCount = Math.floor(bytes.length / SAMPLE_SIZE_BYTES);
-    if (sampleCount === 0) return [];
-
-    const samples = [];
-    for (let i = 0; i < sampleCount; i += 1) {
-      const offset = i * SAMPLE_SIZE_BYTES;
-      samples.push({
-        unixMs: readUint64LEAsNumber(bytes, offset),
-        value: readUint32LE(bytes, offset + 8),
-      });
-    }
-    return samples;
-  }
-
   useFocusEffect(
     React.useCallback(() => {
+      if (!client || !isConnected) {
+        setLoading(false);
+        return () => {};
+      }
+      let active = true;
       csvUriRef.current = FileSystem.documentDirectory + `ppg-${Date.now()}.csv`;
       csvRowsRef.current = ['timestamp_ms,channel,value'];
-
-      const redSub = monitor(
-        PPG_UUIDS.SERVICE_UUID,
-        PPG_UUIDS.RED_CHANNEL_CHAR,
-        (c) => {
-          const v = c.value;
-          if (!v) return;
-          const bytes = base64ToBytes(v);
-          const samples = parsePpgSampleBatchNotification(bytes);
-          if (samples.length === 0) return;
-          for (const sample of samples) {
-            rawRedBufferRef.current.push({ red: sample.value });
-            csvRowsRef.current.push(`${sample.unixMs},red,${sample.value}`);
-          }
+      void (async () => {
+        await client.ppg.setSamplingEnabled(true);
+        await client.ppg.subscribeRed((sample) => {
+          if (!active) return;
+          rawRedBufferRef.current.push({ red: sample.value });
+          csvRowsRef.current.push(`${sample.timestampMs.toString()},red,${sample.value}`);
           if (rawRedBufferRef.current.length > BUFFER_LIMIT) {
             rawRedBufferRef.current.splice(0, rawRedBufferRef.current.length - BUFFER_LIMIT);
           }
-        },
-        (e) => {
-          console.log(e);
-        }
-      );
-
-      const irSub = monitor(
-        PPG_UUIDS.SERVICE_UUID,
-        PPG_UUIDS.IR_CHANNEL_CHAR,
-        (c) => {
-          const v = c.value;
-          if (!v) return;
-          const bytes = base64ToBytes(v);
-          const samples = parsePpgSampleBatchNotification(bytes);
-          if (samples.length === 0) return;
-          console.log(
-            `Received IR batch with ${samples.length} samples, first sample value: ${samples[0].value}`
-          );
-          for (const sample of samples) {
-            rawIRBufferRef.current.push({ ir: sample.value });
-            csvRowsRef.current.push(`${sample.unixMs},ir,${sample.value}`);
-          }
+        });
+        await client.ppg.subscribeInfrared((sample) => {
+          if (!active) return;
+          rawIRBufferRef.current.push({ ir: sample.value });
+          csvRowsRef.current.push(`${sample.timestampMs.toString()},ir,${sample.value}`);
           if (rawIRBufferRef.current.length > BUFFER_LIMIT) {
             rawIRBufferRef.current.splice(0, rawIRBufferRef.current.length - BUFFER_LIMIT);
           }
-        },
-        (e) => {
-          console.log(e);
-        }
-      );
-
-      const greenSub = monitor(
-        PPG_UUIDS.SERVICE_UUID,
-        PPG_UUIDS.GREEN_CHANNEL_CHAR,
-        (c) => {
-          const v = c.value;
-          if (!v) return;
-          const bytes = base64ToBytes(v);
-          const samples = parsePpgSampleBatchNotification(bytes);
-          if (samples.length === 0) return;
-          for (const sample of samples) {
-            rawGreenBufferRef.current.push({ green: sample.value });
-            csvRowsRef.current.push(`${sample.unixMs},green,${sample.value}`);
-          }
+        });
+        await client.ppg.subscribeGreen((sample) => {
+          if (!active) return;
+          rawGreenBufferRef.current.push({ green: sample.value });
+          csvRowsRef.current.push(`${sample.timestampMs.toString()},green,${sample.value}`);
           if (rawGreenBufferRef.current.length > BUFFER_LIMIT) {
             rawGreenBufferRef.current.splice(0, rawGreenBufferRef.current.length - BUFFER_LIMIT);
           }
-        },
-        (e) => {
-          console.log(e);
-        }
-      );
+        });
+      })().catch(console.error);
 
       const interval = setInterval(() => {
         const redBatch = rawRedBufferRef.current.splice(0);
@@ -223,9 +149,10 @@ export default function DevicesScreen() {
       }, 500);
 
       return () => {
-        redSub.remove();
-        irSub.remove();
-        greenSub.remove();
+        active = false;
+        void client.ppg.unsubscribe(PPG_RED_UUID);
+        void client.ppg.unsubscribe(PPG_INFRARED_UUID);
+        void client.ppg.unsubscribe(PPG_GREEN_UUID);
         clearInterval(interval);
         rawRedBufferRef.current = [];
         rawIRBufferRef.current = [];
@@ -237,7 +164,7 @@ export default function DevicesScreen() {
           }).catch((e) => console.log(e));
         }
       };
-    }, [monitor])
+    }, [client, isConnected])
   );
 
   const shareCsv = async () => {

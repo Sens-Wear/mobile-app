@@ -14,10 +14,14 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as Progress from 'react-native-progress';
-import { decode as b64decode } from 'base-64';
 import { useBle } from '@/hooks/BleSessionProvider';
-import { POWER_UUIDS } from '@/ble/bleConstants';
 import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
+import {
+  BATTERY_LEVEL_STATUS_UUID,
+  BATTERY_LEVEL_UUID,
+  ChargeState,
+  type BatteryLevelStatus,
+} from 'senswear';
 
 const WEBSITE_URL = 'https://sens-wear.com';
 
@@ -39,173 +43,37 @@ function InfoRow({ label, value, isLast = false }: InfoRowProps) {
 export default function SettingsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
-  const [gaugeInfo, setGaugeInfo] = useState({
-    temperature_cdec: -1,
-    voltage_mv: -1,
-    average_current_ma: -1,
-    average_power_mw: -1,
-    state_of_charge_cdec: -1,
-    nominal_available_capacity_mah: -1,
-    full_battery_capacity_mah: -1,
-    remaining_capacity_mah: -1,
-  });
-  const [chargerInfo, setChargerInfo] = useState({
-    bButtonPressed: false,
-    bWake1: false,
-    bWake2: false,
-    bShipmentMode: false,
-    bShutdownMode: false,
-    bPowerGood: false,
-    bCharging: false,
-    bCharged: false,
-    bThermalRegulation: false,
-    bBatteryUVLO: false,
-    bThermalNormal: false,
-    bThermalWarmOrHot: false,
-    bThermalWarm: false,
-    bThermalCool: false,
-    bSafetyTimerFault: false,
-    bThermalSystemFault: false,
-    bBatteryUVLOFault: false,
-    bBatteryOCPFault: false,
-  });
-  const { forget, monitor, readCharacteristic, isConnected } = useBle();
+  const [batteryPercent, setBatteryPercent] = useState<number | null>(null);
+  const [powerStatus, setPowerStatus] = useState<BatteryLevelStatus | null>(null);
+  const { forget, client, isConnected } = useBle();
   const daughterBoardState = useFocusedDaughterBoardState();
-
-  function base64ToBytes(base64: string) {
-    const binary = b64decode(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
 
   useFocusEffect(
     React.useCallback(() => {
-      if (!isConnected) {
+      if (!isConnected || !client) {
         return () => {};
       }
-
-      let isChargerActive = true;
-      let isGaugeActive = true;
-
-      const handleChargerUpdate = (c: { value: string | null }) => {
-        const v = c.value;
-        if (!v) return;
-        const bytes = base64ToBytes(v);
-        if (bytes.length < 4) return;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        const flags = view.getUint32(0, true);
-        setChargerInfo({
-          bButtonPressed: !!(flags & (1 << 0)),
-          bWake1: !!(flags & (1 << 1)),
-          bWake2: !!(flags & (1 << 2)),
-          bShipmentMode: !!(flags & (1 << 3)),
-          bShutdownMode: !!(flags & (1 << 4)),
-          bPowerGood: !!(flags & (1 << 5)),
-          bCharging: !!(flags & (1 << 6)),
-          bCharged: !!(flags & (1 << 7)),
-          bThermalRegulation: !!(flags & (1 << 8)),
-          bBatteryUVLO: !!(flags & (1 << 9)),
-          bThermalNormal: !!(flags & (1 << 10)),
-          bThermalWarmOrHot: !!(flags & (1 << 11)),
-          bThermalWarm: !!(flags & (1 << 12)),
-          bThermalCool: !!(flags & (1 << 13)),
-          bSafetyTimerFault: !!(flags & (1 << 14)),
-          bThermalSystemFault: !!(flags & (1 << 15)),
-          bBatteryUVLOFault: !!(flags & (1 << 16)),
-          bBatteryOCPFault: !!(flags & (1 << 17)),
+      let active = true;
+      void (async () => {
+        const [battery, power] = await Promise.all([client.battery.read(), client.power.read()]);
+        if (active) {
+          setBatteryPercent(battery.percent);
+          setPowerStatus(power);
+        }
+        await client.battery.subscribe((value) => {
+          if (active) setBatteryPercent(value.percent);
         });
-      };
-
-      const readChargerInitial = async () => {
-        try {
-          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.CHARGER_CHAR);
-          if (isChargerActive && c) handleChargerUpdate(c);
-        } catch (e) {
-          console.log(e);
-        }
-      };
-
-      readChargerInitial();
-
-      const chargerSub = monitor(
-        POWER_UUIDS.SERVICE_UUID,
-        POWER_UUIDS.CHARGER_CHAR,
-        handleChargerUpdate,
-        (e) => {
-          console.log(e);
-        }
-      );
-
-      const handleGaugeUpdate = (c: { value: string | null }) => {
-        const v = c.value;
-        if (!v) return;
-        const bytes = base64ToBytes(v);
-        if (bytes.length < 16) return;
-        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        let o = 0;
-
-        const i16 = () => {
-          const value = view.getInt16(o, true);
-          o += 2;
-          return value;
-        };
-        const u16 = () => {
-          const value = view.getUint16(o, true);
-          o += 2;
-          return value;
-        };
-
-        const temperature_cdec = i16();
-        const voltage_mv = u16();
-        const average_current_ma = i16();
-        const average_power_mw = i16();
-        const state_of_charge_cdec = u16();
-        const nominal_available_capacity_mah = u16();
-        const full_battery_capacity_mah = u16();
-        const remaining_capacity_mah = u16();
-
-        setGaugeInfo({
-          temperature_cdec,
-          voltage_mv,
-          average_current_ma,
-          average_power_mw,
-          state_of_charge_cdec,
-          nominal_available_capacity_mah,
-          full_battery_capacity_mah,
-          remaining_capacity_mah,
+        await client.power.subscribe((value) => {
+          if (active) setPowerStatus(value);
         });
-      };
-
-      const readGaugeInitial = async () => {
-        try {
-          const c = await readCharacteristic(POWER_UUIDS.SERVICE_UUID, POWER_UUIDS.GAUGE_CHAR);
-          if (isGaugeActive && c) handleGaugeUpdate(c);
-        } catch (e) {
-          console.log(e);
-        }
-      };
-
-      readGaugeInitial();
-
-      const gaugeSub = monitor(
-        POWER_UUIDS.SERVICE_UUID,
-        POWER_UUIDS.GAUGE_CHAR,
-        handleGaugeUpdate,
-        (e) => {
-          console.log(e);
-        }
-      );
+      })().catch(console.error);
 
       return () => {
-        isChargerActive = false;
-        isGaugeActive = false;
-        chargerSub.remove();
-        gaugeSub.remove();
+        active = false;
+        void client.stopNotify(BATTERY_LEVEL_UUID);
+        void client.stopNotify(BATTERY_LEVEL_STATUS_UUID);
       };
-    }, [isConnected, monitor, readCharacteristic])
+    }, [isConnected, client])
   );
 
   const handleUnpairPress = () => {
@@ -239,26 +107,11 @@ export default function SettingsScreen() {
     await Linking.openURL(WEBSITE_URL);
   };
 
-  const chargeStatus = chargerInfo.bCharged
-    ? 'Charged'
-    : chargerInfo.bCharging
-      ? 'Charging'
-      : 'Not connected';
-  const batteryProgress =
-    gaugeInfo.state_of_charge_cdec > -1
-      ? Math.min(1, Math.max(0, gaugeInfo.state_of_charge_cdec / 1000))
-      : 0;
-  const batteryPercentage =
-    gaugeInfo.state_of_charge_cdec > -1 ? `${Math.floor(gaugeInfo.state_of_charge_cdec / 10)}%` : '--';
-  const batteryTemperature =
-    gaugeInfo.temperature_cdec > -1 ? `${(gaugeInfo.temperature_cdec / 10).toFixed(1)} C` : '--';
-  const batteryCapacity =
-    gaugeInfo.full_battery_capacity_mah > -1 ? `${gaugeInfo.full_battery_capacity_mah} mAh` : '--';
-  const batteryVoltage = gaugeInfo.voltage_mv > -1 ? `${gaugeInfo.voltage_mv} mV` : '--';
-  const batteryCurrent =
-    gaugeInfo.average_current_ma > -1 ? `${gaugeInfo.average_current_ma} mA` : '--';
-  const batteryPower = gaugeInfo.average_power_mw > -1 ? `${gaugeInfo.average_power_mw} mW` : '--';
-  const chargeColor = chargerInfo.bCharging ? '#305CDE' : chargerInfo.bCharged ? '#1C7C54' : '#AF2B1E';
+  const isCharging = powerStatus?.chargeState === ChargeState.Charging;
+  const chargeStatus = isCharging ? 'Charging' : powerStatus?.batteryPresent ? 'On battery' : 'Unknown';
+  const batteryProgress = batteryPercent === null ? 0 : batteryPercent / 100;
+  const batteryPercentage = batteryPercent === null ? '--' : `${batteryPercent}%`;
+  const chargeColor = isCharging ? '#305CDE' : batteryPercent !== null && batteryPercent > 20 ? '#1C7C54' : '#AF2B1E';
   const connectedBoardsValue =
     daughterBoardState.connectedBoardNames.length > 0
       ? daughterBoardState.connectedBoardNames.join(', ')
@@ -313,27 +166,6 @@ export default function SettingsScreen() {
           </View>
         </View>
       </LinearGradient>
-
-      <View style={styles.metricRow}>
-        <View style={styles.metricCard}>
-          <Ionicons name="thermometer-outline" size={18} color="#153B2E" />
-          <Text style={styles.metricLabel}>Temperature</Text>
-          <Text style={styles.metricValue}>{batteryTemperature}</Text>
-        </View>
-        <View style={styles.metricCard}>
-          <Ionicons name="flash-outline" size={18} color="#153B2E" />
-          <Text style={styles.metricLabel}>Voltage</Text>
-          <Text style={styles.metricValue}>{batteryVoltage}</Text>
-        </View>
-      </View>
-
-      <View style={styles.sectionCard}>
-        <Text style={styles.sectionTitle}>Battery overview</Text>
-        <InfoRow label="Battery percentage" value={batteryPercentage} />
-        <InfoRow label="Battery capacity" value={batteryCapacity} />
-        <InfoRow label="Average current" value={batteryCurrent} />
-        <InfoRow label="Average power" value={batteryPower} isLast />
-      </View>
 
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Platform details</Text>
@@ -472,30 +304,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     marginTop: 8,
-  },
-  metricRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 18,
-  },
-  metricCard: {
-    width: '48%',
-    backgroundColor: '#FFF9F2',
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: '#E9DACC',
-    padding: 16,
-  },
-  metricLabel: {
-    color: '#68736D',
-    fontSize: 12,
-    marginTop: 10,
-  },
-  metricValue: {
-    color: '#14251F',
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 4,
   },
   sectionCard: {
     marginTop: 18,

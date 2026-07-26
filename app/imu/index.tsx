@@ -13,11 +13,9 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
-import { decode as b64decode } from 'base-64';
 import Legend from '@/components/ui/Legend';
-import { IMU_UUIDS } from '@/ble/bleConstants';
 import { useBle } from '@/hooks/BleSessionProvider';
-import { IMU_CONSTANTS } from '@/constants/SensorConstants';
+import { IMU_ACCELEROMETER_UUID, IMU_QUATERNION_UUID } from 'senswear';
 
 const MAX_LENGTH = 500;
 const BUFFER_LIMIT = 500;
@@ -25,88 +23,59 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_WIDTH = SCREEN_WIDTH - 80;
 
 export default function DevicesScreen() {
-  const { monitor } = useBle();
-  const [accData, setAccData] = useState({
-    x: [],
-    y: [],
-    z: [],
+  const { client, isConnected } = useBle();
+  const [accData, setAccData] = useState<{
+    x: { value: number }[]; y: { value: number }[]; z: { value: number }[];
+  }>({
+    x: [], y: [], z: [],
   });
-  const [gyroData, setGyroData] = useState({
-    x: [],
-    y: [],
-    z: [],
-    w: [],
+  const [gyroData, setGyroData] = useState<{
+    x: { value: number }[]; y: { value: number }[]; z: { value: number }[]; w: { value: number }[];
+  }>({
+    x: [], y: [], z: [], w: [],
   });
   const [loading, setLoading] = useState(true);
   const router = useRouter();
-  const accChartRef = useRef(null);
-  const gyroDataChartRef = useRef(null);
+  const accChartRef = useRef<any>(null);
+  const gyroDataChartRef = useRef<any>(null);
   const lastScrollRef = useRef(0);
   const accBufferRef = useRef<{ x: number; y: number; z: number }[]>([]);
   const gyroBufferRef = useRef<{ x: number; y: number; z: number; w: number }[]>([]);
 
-  function base64ToBytes(base64: string) {
-    const binary = b64decode(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  function readInt16LE(bytes: Uint8Array, offset: number) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    return view.getInt16(offset, true);
-  }
-
   useFocusEffect(
     React.useCallback(() => {
-      const accSub = monitor(
-        IMU_UUIDS.SERVICE_UUID,
-        IMU_UUIDS.ACCELEROMETER_CHAR,
-        (c) => {
-          const v = c.value;
-          if (!v) return;
-          const bytes = base64ToBytes(v);
-          if (bytes.length < 6) return;
+      if (!client || !isConnected) {
+        setLoading(false);
+        return () => {};
+      }
+      let active = true;
+      setLoading(true);
+      void (async () => {
+        await client.imu.setEnabled(true);
+        await client.imu.setDrainPeriodMs(100);
+        await client.imu.subscribeAccelerometer((sample) => {
+          if (!active) return;
           const dataToPush = {
-            x: readInt16LE(bytes, 0),
-            y: readInt16LE(bytes, 2),
-            z: readInt16LE(bytes, 4),
+            x: sample.xG,
+            y: sample.yG,
+            z: sample.zG,
           };
           accBufferRef.current.push(dataToPush);
           if (accBufferRef.current.length > BUFFER_LIMIT) {
             accBufferRef.current.splice(0, accBufferRef.current.length - BUFFER_LIMIT);
           }
-        },
-        (e) => {
-          console.log(e);
-        }
-      );
-
-      const gyroSub = monitor(
-        IMU_UUIDS.SERVICE_UUID,
-        IMU_UUIDS.QUATERNION_CHAR,
-        (c) => {
-          const v = c.value;
-          if (!v) return;
-          const bytes = base64ToBytes(v);
-          if (bytes.length < 10) return;
+        });
+        await client.imu.subscribeQuaternion((sample) => {
+          if (!active) return;
           const dataToPush = {
-            x: readInt16LE(bytes, 0) / IMU_CONSTANTS.QUATERNION_DIVISION,
-            y: readInt16LE(bytes, 2) / IMU_CONSTANTS.QUATERNION_DIVISION,
-            z: readInt16LE(bytes, 4) / IMU_CONSTANTS.QUATERNION_DIVISION,
-            w: readInt16LE(bytes, 6) / IMU_CONSTANTS.QUATERNION_DIVISION,
+            x: sample.x, y: sample.y, z: sample.z, w: sample.w,
           };
           gyroBufferRef.current.push(dataToPush);
           if (gyroBufferRef.current.length > BUFFER_LIMIT) {
             gyroBufferRef.current.splice(0, gyroBufferRef.current.length - BUFFER_LIMIT);
           }
-        },
-        (e) => {
-          console.log(e);
-        }
-      );
+        });
+      })().catch(console.error);
 
       const interval = setInterval(() => {
         const accBatch = accBufferRef.current.splice(0);
@@ -157,13 +126,14 @@ export default function DevicesScreen() {
       }, 500);
 
       return () => {
-        accSub.remove();
-        gyroSub.remove();
+        active = false;
+        void client.imu.unsubscribe(IMU_ACCELEROMETER_UUID);
+        void client.imu.unsubscribe(IMU_QUATERNION_UUID);
         clearInterval(interval);
         accBufferRef.current = [];
         gyroBufferRef.current = [];
       };
-    }, [monitor])
+    }, [client, isConnected])
   );
 
   useEffect(() => {
@@ -226,7 +196,7 @@ export default function DevicesScreen() {
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Accelerometer axes</Text>
           <Text style={styles.summaryValue}>X / Y / Z</Text>
-          <Text style={styles.summaryHint}>Raw motion readings</Text>
+          <Text style={styles.summaryHint}>Gravity-including acceleration in g</Text>
         </View>
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Quaternion axes</Text>
@@ -250,7 +220,7 @@ export default function DevicesScreen() {
                 <Text style={styles.sectionCaption}>Live accelerometer stream across three axes.</Text>
               </View>
               <View style={styles.sectionBadge}>
-                <Text style={styles.sectionBadgeText}>+/- 5k</Text>
+                <Text style={styles.sectionBadgeText}>±8 g</Text>
               </View>
             </View>
 
@@ -271,8 +241,8 @@ export default function DevicesScreen() {
                 isAnimated={false}
                 initialSpacing={0}
                 spacing={1}
-                maxValue={5000}
-                mostNegativeValue={-4000}
+                maxValue={8}
+                mostNegativeValue={-8}
                 endSpacing={0}
                 data={accData.x}
                 data2={accData.y}

@@ -1,108 +1,75 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
+import { TouchGesture } from 'senswear';
+import {
+  TOUCH_POSITION_MAX,
+  touchPositionFromSample,
+  touchPositionPercent,
+} from '@/ble/touchAxis';
+import { useBle } from '@/hooks/BleSessionProvider';
 
-const ELECTRODE_COUNT = 15;
-const UPDATE_INTERVAL_MS = 250;
-const GESTURE_DURATION_MS = 3000;
 const CHART_WIDTH = Dimensions.get('window').width - 80;
+const HISTORY_LENGTH = 120;
 
 type ChannelPoint = {
   value: number;
   label?: string;
 };
 
-type GestureName =
-  | 'Idle'
-  | 'Tap'
-  | 'Double Tap'
-  | 'Swipe Left'
-  | 'Swipe Right'
-  | 'Press and Hold';
-
-const GESTURES: GestureName[] = ['Idle', 'Tap', 'Double Tap', 'Swipe Left', 'Swipe Right', 'Press and Hold'];
-
 export default function TouchScreen() {
   const router = useRouter();
-  const [gesture, setGesture] = useState<GestureName>('Idle');
-  const [channelValues, setChannelValues] = useState<number[]>(
-    Array.from({ length: ELECTRODE_COUNT }, () => 0)
-  );
-  const gestureStartedAtRef = useRef(Date.now());
-  const gestureIndexRef = useRef(0);
-  const gestureCenterRef = useRef(7);
-
-  const chartData = useMemo<ChannelPoint[]>(
-    () =>
-      channelValues.map((value, index) => ({
-        value,
-        label: `E${index + 1}`,
-      })),
-    [channelValues]
-  );
-
-  const chartRange = useMemo(() => {
-    let min = channelValues[0] ?? 0;
-    let max = channelValues[0] ?? 0;
-
-    for (const value of channelValues) {
-      if (value < min) min = value;
-      if (value > max) max = value;
-    }
-
-    const range = max - min;
-    const padding = range > 0 ? range * 0.15 : 40;
-    return {
-      min: Math.max(0, min - padding),
-      max: max + padding,
-    };
-  }, [channelValues]);
-
-  const strongestElectrode = useMemo(() => {
-    let strongestIndex = 0;
-    let strongestValue = channelValues[0] ?? 0;
-    channelValues.forEach((value, index) => {
-      if (value > strongestValue) {
-        strongestIndex = index;
-        strongestValue = value;
-      }
-    });
-    return { index: strongestIndex + 1, value: strongestValue };
-  }, [channelValues]);
+  const { client, isConnected } = useBle();
+  const [gesture, setGesture] = useState('None');
+  const [touched, setTouched] = useState(false);
+  const [position, setPosition] = useState<number | null>(null);
+  const [positionHistory, setPositionHistory] = useState<ChannelPoint[]>([]);
 
   useFocusEffect(
     React.useCallback(() => {
-      const pickNextGesture = () => {
-        gestureIndexRef.current = (gestureIndexRef.current + 1) % GESTURES.length;
-        gestureStartedAtRef.current = Date.now();
-        gestureCenterRef.current = 2 + Math.floor(Math.random() * (ELECTRODE_COUNT - 4));
-        setGesture(GESTURES[gestureIndexRef.current]);
-      };
-
-      setGesture(GESTURES[gestureIndexRef.current]);
-      setChannelValues(generateFrame(GESTURES[gestureIndexRef.current], 0, gestureCenterRef.current));
-
-      const interval = setInterval(() => {
-        const elapsed = Date.now() - gestureStartedAtRef.current;
-        if (elapsed >= GESTURE_DURATION_MS) {
-          pickNextGesture();
-          return;
+      if (!client || !isConnected) return () => {};
+      let active = true;
+      void (async () => {
+        await client.touch.setSamplingEnabled(true);
+        const initial = await client.touch.readState();
+        if (active) {
+          setTouched(initial.touched);
+          const initialPosition = touchPositionFromSample(initial);
+          setPosition(initialPosition);
+          if (initialPosition !== null) setPositionHistory([{ value: initialPosition }]);
         }
-
-        setChannelValues(
-          generateFrame(GESTURES[gestureIndexRef.current], elapsed / GESTURE_DURATION_MS, gestureCenterRef.current)
-        );
-      }, UPDATE_INTERVAL_MS);
+        await client.touch.subscribeState((state) => {
+          if (!active) return;
+          setTouched(state.touched);
+          const nextPosition = touchPositionFromSample(state);
+          setPosition(nextPosition);
+          if (nextPosition !== null) {
+            setPositionHistory((previous) => [
+              ...previous.slice(-(HISTORY_LENGTH - 1)),
+              { value: nextPosition },
+            ]);
+          }
+        });
+        await client.touch.subscribeGesture((event) => {
+          if (active) setGesture(touchGestureLabel(event.gesture));
+        });
+      })().catch(console.error);
 
       return () => {
-        clearInterval(interval);
+        active = false;
+        void client.touch.unsubscribeState();
+        void client.touch.unsubscribeGesture();
       };
-    }, [])
+    }, [client, isConnected])
   );
+
+  const positionRatio = position === null ? 0 : touchPositionPercent(position);
+  const markerPercent = Math.max(2, Math.min(98, positionRatio * 100));
+  const positionLabel = position === null ? '—' : Math.round(position).toString();
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -122,20 +89,20 @@ export default function TouchScreen() {
         </View>
 
         <Text style={styles.eyebrow}>Touch demo</Text>
-        <Text style={styles.heroTitle}>Preview gesture patterns across the full electrode strip.</Text>
+        <Text style={styles.heroTitle}>Inspect live touch position and gestures.</Text>
         <Text style={styles.heroSubtitle}>
-          This simulated MTCH6102 view cycles through gesture states and updates a 15-channel profile
-          without changing the pending BLE integration path.
+          Follow movement along the daughter board&apos;s single touch axis and inspect normalized
+          gestures decoded by the SensWear SDK.
         </Text>
 
         <View style={styles.heroMetaRow}>
           <View style={styles.metaPill}>
             <Ionicons name="analytics-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>15 electrodes</Text>
+            <Text style={styles.metaPillText}>12-bit position</Text>
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="radio-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>Simulated stream</Text>
+            <Text style={styles.metaPillText}>{touched ? 'Touch active' : 'Not touched'}</Text>
           </View>
         </View>
       </LinearGradient>
@@ -144,25 +111,57 @@ export default function TouchScreen() {
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Detected gesture</Text>
           <Text style={styles.summaryValue}>{gesture}</Text>
-          <Text style={styles.summaryHint}>Cycles automatically every few seconds.</Text>
+          <Text style={styles.summaryHint}>Latest normalized firmware gesture.</Text>
         </View>
         <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>Peak electrode</Text>
-          <Text style={styles.summaryValue}>E{strongestElectrode.index}</Text>
-          <Text style={styles.summaryHint}>{Math.round(strongestElectrode.value)} units in the current frame.</Text>
+          <Text style={styles.summaryLabel}>Position</Text>
+          <Text style={styles.summaryValue}>{positionLabel}</Text>
+          <Text style={styles.summaryHint}>Single-axis controller position from 0 to 4095.</Text>
         </View>
       </View>
 
       <View style={styles.sectionCard}>
         <View style={styles.sectionHeader}>
           <View>
-            <Text style={styles.sectionTitle}>Electrode profile</Text>
+            <Text style={styles.sectionTitle}>Touch position</Text>
             <Text style={styles.sectionCaption}>
-              Area chart of the current 15-electrode response curve.
+              Current location along the daughter board&apos;s touch strip.
             </Text>
           </View>
           <View style={styles.sectionBadge}>
-            <Text style={styles.sectionBadgeText}>15 CH</Text>
+            <Text style={styles.sectionBadgeText}>0–4095</Text>
+          </View>
+        </View>
+
+        <View style={styles.positionReadout}>
+          <Text style={styles.positionValue}>{positionLabel}</Text>
+          <Text style={styles.positionPercent}>
+            {position === null ? 'Touch the strip' : `${Math.round(positionRatio * 100)}%`}
+          </Text>
+        </View>
+
+        <View style={styles.touchTrack}>
+          <View style={[styles.touchTrackFill, { width: `${positionRatio * 100}%` }]} />
+          {position !== null && (
+            <View style={[styles.touchMarker, { left: `${markerPercent}%` }]} />
+          )}
+        </View>
+        <View style={styles.trackLabels}>
+          <Text style={styles.trackLabel}>0</Text>
+          <Text style={styles.trackLabel}>{TOUCH_POSITION_MAX}</Text>
+        </View>
+      </View>
+
+      <View style={styles.sectionCard}>
+        <View style={styles.sectionHeader}>
+          <View>
+            <Text style={styles.sectionTitle}>Position history</Text>
+            <Text style={styles.sectionCaption}>
+              Recent samples from the single touch axis.
+            </Text>
+          </View>
+          <View style={styles.sectionBadge}>
+            <Text style={styles.sectionBadgeText}>LIVE</Text>
           </View>
         </View>
 
@@ -182,75 +181,19 @@ export default function TouchScreen() {
           dataPointsRadius={4}
           initialSpacing={16}
           endSpacing={16}
-          spacing={20}
-          xAxisLabelTextStyle={styles.xAxisLabel}
+          spacing={3}
           yAxisTextStyle={styles.yAxisLabel}
-          data={chartData}
-          yAxisOffset={chartRange.min}
-          maxValue={chartRange.max - chartRange.min}
+          data={positionHistory}
+          maxValue={TOUCH_POSITION_MAX}
           noOfSections={4}
         />
-      </View>
-
-      <View style={styles.sectionCard}>
-        <View style={styles.sectionHeader}>
-          <View>
-            <Text style={styles.sectionTitle}>Channel values</Text>
-            <Text style={styles.sectionCaption}>
-              Per-electrode values from the current simulated touch frame.
-            </Text>
-          </View>
-          <View style={styles.sectionBadge}>
-            <Text style={styles.sectionBadgeText}>LIVE</Text>
-          </View>
-        </View>
-
-        <View style={styles.channelGrid}>
-          {channelValues.map((value, index) => (
-            <View key={`channel-${index + 1}`} style={styles.channelCard}>
-              <Text style={styles.channelName}>E{index + 1}</Text>
-              <Text style={styles.channelValue}>{Math.round(value)}</Text>
-            </View>
-          ))}
-        </View>
       </View>
     </ScrollView>
   );
 }
 
-function generateFrame(gesture: GestureName, progress: number, center: number) {
-  const base = Array.from({ length: ELECTRODE_COUNT }, (_, index) => {
-    const noise = 8 + Math.random() * 14;
-    return noise + index * 0.8;
-  });
-
-  switch (gesture) {
-    case 'Idle':
-      return base;
-    case 'Tap':
-      return applyPeak(base, center, 220 * Math.sin(progress * Math.PI));
-    case 'Double Tap': {
-      const firstPulse = Math.sin(Math.min(progress * 2, 1) * Math.PI);
-      const secondPulse = progress > 0.5 ? Math.sin((progress - 0.5) * 2 * Math.PI) : 0;
-      return applyPeak(base, center, 180 * Math.max(firstPulse, secondPulse));
-    }
-    case 'Swipe Left':
-      return applyPeak(base, Math.round((ELECTRODE_COUNT - 2) - progress * (ELECTRODE_COUNT - 4)), 190);
-    case 'Swipe Right':
-      return applyPeak(base, Math.round(1 + progress * (ELECTRODE_COUNT - 4)), 190);
-    case 'Press and Hold':
-      return applyPeak(base, center, 170 + Math.sin(progress * Math.PI * 4) * 18);
-    default:
-      return base;
-  }
-}
-
-function applyPeak(values: number[], center: number, amplitude: number) {
-  return values.map((value, index) => {
-    const distance = Math.abs(index - center);
-    const spread = Math.exp(-(distance * distance) / 3.2);
-    return Math.max(0, value + amplitude * spread);
-  });
+function touchGestureLabel(gesture: TouchGesture): string {
+  return TouchGesture[gesture]?.replace(/([a-z])([A-Z])/g, '$1 $2') ?? `Unknown (${gesture})`;
 }
 
 const styles = StyleSheet.create({
@@ -403,37 +346,57 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  xAxisLabel: {
-    fontSize: 10,
-    color: '#4b4b4b',
-  },
   yAxisLabel: {
     fontSize: 10,
     color: '#4b4b4b',
   },
-  channelGrid: {
+  positionReadout: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 10,
+    alignItems: 'flex-end',
+    marginTop: 8,
   },
-  channelCard: {
-    width: '30%',
-    minWidth: 92,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    borderRadius: 16,
-    backgroundColor: '#F1E3D2',
-    alignItems: 'center',
+  positionValue: {
+    color: '#14251F',
+    fontSize: 40,
+    fontWeight: '800',
   },
-  channelName: {
-    fontSize: 13,
+  positionPercent: {
     color: '#68736D',
+    fontSize: 14,
+    fontWeight: '700',
     marginBottom: 6,
   },
-  channelValue: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#14251F',
+  touchTrack: {
+    height: 14,
+    borderRadius: 999,
+    backgroundColor: '#E1D7CC',
+    marginTop: 18,
+    position: 'relative',
+  },
+  touchTrackFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#356B59',
+  },
+  touchMarker: {
+    position: 'absolute',
+    top: -5,
+    width: 24,
+    height: 24,
+    marginLeft: -12,
+    borderRadius: 12,
+    backgroundColor: '#153B2E',
+    borderWidth: 4,
+    borderColor: '#F1E3D2',
+  },
+  trackLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  trackLabel: {
+    color: '#68736D',
+    fontSize: 12,
   },
 });

@@ -1,274 +1,242 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { bleManager } from '../ble/bleManager';
-import type { Device, Subscription, Characteristic } from 'react-native-ble-plx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Subscription } from 'react-native-ble-plx';
+import { SenswearClient, type DiscoveredDevice } from 'senswear';
+
+import { bleManager } from '../ble/bleManager';
 import { STORAGE_KEYS } from '@/constants/StorageKeys';
-import { Platform } from 'react-native';
 
 type BleSessionState = {
   deviceId: string | null;
   isConnected: boolean;
   isConnecting: boolean;
+  isReconnecting: boolean;
   error: Error | null;
 };
+
+const RECONNECT_DELAY_MS = 2_000;
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+function isOperationCancelled(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const error = value as { errorCode?: unknown; message?: unknown };
+  return error.errorCode === 2 || error.message === 'Operation was cancelled';
+}
 
 export function useBleSession() {
   const [state, setState] = useState<BleSessionState>({
     deviceId: null,
     isConnected: false,
     isConnecting: false,
+    isReconnecting: false,
     error: null,
   });
-
-  // Track monitor subscriptions so we can cleanup
-  const monitorsRef = useRef<Subscription[]>([]);
+  const [client, setClient] = useState<SenswearClient | null>(null);
+  const clientRef = useRef<SenswearClient | null>(null);
   const disconnectSubRef = useRef<Subscription | null>(null);
+  const reconnectTargetRef = useRef<string | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectEnabledRef = useRef(false);
+  const persistAfterConnectRef = useRef(false);
 
-  const clearMonitors = useCallback(() => {
-    monitorsRef.current.forEach(s => {
-      try { s.remove(); } catch {}
+  const discover = useCallback(async (timeoutMs = 5_000): Promise<DiscoveredDevice[]> => {
+    return SenswearClient.discover({
+      manager: bleManager,
+      timeoutMs,
+      namePrefixes: ['Sens Wear', 'SensWear', 'SenseWear'],
     });
-    monitorsRef.current = [];
   }, []);
 
-  const connect = useCallback(async (deviceId: string) => {
-    setState(prev => ({ ...prev, isConnecting: true, error: null }));
+  const persistPairedId = useCallback(
+    (id: string) => AsyncStorage.setItem(STORAGE_KEYS.PAIRED_DEVICE_ID, id),
+    []
+  );
+  const loadPairedId = useCallback(
+    () => AsyncStorage.getItem(STORAGE_KEYS.PAIRED_DEVICE_ID),
+    []
+  );
+  const clearPairedId = useCallback(
+    () => AsyncStorage.removeItem(STORAGE_KEYS.PAIRED_DEVICE_ID),
+    []
+  );
 
+  const connect = useCallback(async (deviceId: string, isReconnect = false) => {
+    reconnectEnabledRef.current = true;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectTargetRef.current = deviceId;
+    setState((previous) => ({
+      ...previous,
+      deviceId,
+      isConnecting: true,
+      isReconnecting: isReconnect,
+      error: isReconnect ? previous.error : null,
+    }));
     try {
-      // Connect
-      let device = await bleManager.connectToDevice(deviceId, { timeout: 8000 });
-
-      // Discover once (important)
-      await device.discoverAllServicesAndCharacteristics();
-      
-      // Android only: request larger ATT MTU for bigger notification payloads.
-      // Negotiated value depends on peripheral + stack and can be lower than requested.
-      if (Platform.OS === 'android') {
-        try {
-          device = await device.requestMTU(512);
-          console.log('Negotiated MTU:', device.mtu);
-        } catch (mtuError) {
-          console.log('MTU request failed, continuing with default MTU', mtuError);
-        }
+      disconnectSubRef.current?.remove();
+      disconnectSubRef.current = null;
+      if (clientRef.current) {
+        await clientRef.current.disconnect();
       }
 
-      // Remove any previous listeners/subscriptions
-      clearMonitors();
-      disconnectSubRef.current?.remove();
+      const nextClient = new SenswearClient(deviceId, {
+        manager: bleManager,
+        timeoutMs: 8_000,
+        waitForPoweredOn: true,
+        connectionOptions: {
+          requestMTU: 247,
+        },
+        onNotificationError(error, characteristicUuid) {
+          if (isOperationCancelled(error)) return;
+          console.error(`SensWear notification error on ${characteristicUuid}`, error);
+          if (!reconnectEnabledRef.current) return;
+          setClient(null);
+          setState({
+            deviceId,
+            isConnected: false,
+            isConnecting: false,
+            isReconnecting: true,
+            error: asError(error),
+          });
+        },
+      });
+      await nextClient.connect();
+      clientRef.current = nextClient;
+      setClient(nextClient);
 
-      // Listen for disconnects
-      disconnectSubRef.current = bleManager.onDeviceDisconnected(device.id, (error) => {
-        // mark disconnected; you can choose to auto-reconnect here if desired
-        setState(prev => ({
-          ...prev,
+      disconnectSubRef.current = bleManager.onDeviceDisconnected(deviceId, (error) => {
+        clientRef.current = null;
+        setClient(null);
+        if (!reconnectEnabledRef.current) return;
+        setState({
+          deviceId,
           isConnected: false,
           isConnecting: false,
-          deviceId: null,
-          error: error ?? null,
-        }));
+          isReconnecting: true,
+          error: error ?? new Error('The BLE connection was lost.'),
+        });
       });
 
-      setState(prev => ({
-        ...prev,
-        deviceId: device.id,
+      if (persistAfterConnectRef.current) {
+        persistAfterConnectRef.current = false;
+        try {
+          await persistPairedId(deviceId);
+        } catch (error) {
+          console.error('Failed to save the paired SensWear device', error);
+        }
+      }
+      setState({
+        deviceId,
         isConnected: true,
         isConnecting: false,
-      }));
-
-      return device;
-    } catch (e: any) {
-      setState(prev => ({
-        ...prev,
-        isConnecting: false,
+        isReconnecting: false,
+        error: null,
+      });
+      return nextClient;
+    } catch (error) {
+      const normalized = asError(error);
+      clientRef.current = null;
+      setClient(null);
+      setState({
+        deviceId,
         isConnected: false,
-        deviceId: null,
-        error: e,
-      }));
+        isConnecting: false,
+        isReconnecting: reconnectEnabledRef.current,
+        error: normalized,
+      });
       return null;
     }
-  }, [clearMonitors]);
+  }, [persistPairedId]);
+
+  useEffect(() => {
+    if (!state.isReconnecting || state.isConnecting || !reconnectEnabledRef.current) return;
+    const deviceId = reconnectTargetRef.current;
+    if (!deviceId || reconnectTimerRef.current) return;
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      if (reconnectEnabledRef.current) {
+        void connect(deviceId, true);
+      }
+    }, RECONNECT_DELAY_MS);
+
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [connect, state.isConnecting, state.isReconnecting, state.error]);
 
   const disconnect = useCallback(async () => {
-    const id = state.deviceId;
-    if (!id) return;
-
+    reconnectEnabledRef.current = false;
+    reconnectTargetRef.current = null;
+    persistAfterConnectRef.current = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    disconnectSubRef.current?.remove();
+    disconnectSubRef.current = null;
+    const current = clientRef.current;
+    clientRef.current = null;
+    setClient(null);
     try {
-      clearMonitors();
-      disconnectSubRef.current?.remove();
-      disconnectSubRef.current = null;
-
-      await bleManager.cancelDeviceConnection(id);
+      await current?.disconnect();
     } finally {
-      setState(prev => ({
-        ...prev,
+      setState((previous) => ({
+        ...previous,
         deviceId: null,
         isConnected: false,
         isConnecting: false,
+        isReconnecting: false,
+        error: null,
       }));
     }
-  }, [state.deviceId, clearMonitors]);
-
-  const getServices = useCallback(async () => {
-    if (!state.deviceId) throw new Error('No connected device');
-    return bleManager.servicesForDevice(state.deviceId);
-  }, [state.deviceId]);
-
-  const getCharacteristics = useCallback(async (serviceUUID: string) => {
-    if (!state.deviceId) throw new Error('No connected device');
-    return bleManager.characteristicsForDevice(state.deviceId, serviceUUID);
-  }, [state.deviceId]);
-
-  const monitor = useCallback((
-    serviceUUID: string,
-    characteristicUUID: string,
-    onUpdate: (c: Characteristic) => void,
-    onError?: (e: Error) => void
-  ) => {
-    if (!state.deviceId) throw new Error('No connected device');
-
-    const sub = bleManager.monitorCharacteristicForDevice(
-      state.deviceId,
-      serviceUUID,
-      characteristicUUID,
-      (error, characteristic) => {
-        if (error) {
-          onError?.(error);
-          return;
-        }
-        if (characteristic) onUpdate(characteristic);
-      }
-    );
-
-    monitorsRef.current.push(sub);
-    return sub;
-  }, [state.deviceId]);
-
-  const readCharacteristic = useCallback(async (
-    serviceUUID: string,
-    characteristicUUID: string
-  ) => {
-    if (!state.deviceId) throw new Error('No connected device');
-
-    return bleManager.readCharacteristicForDevice(
-      state.deviceId,
-      serviceUUID,
-      characteristicUUID
-    );
-  }, [state.deviceId]);
-
-  const writeWithResponse = useCallback(async (
-    serviceUUID: string,
-    characteristicUUID: string,
-    base64Value: string
-  ) => {
-    if (!state.deviceId) throw new Error('No connected device');
-
-    return bleManager.writeCharacteristicWithResponseForDevice(
-      state.deviceId,
-      serviceUUID,
-      characteristicUUID,
-      base64Value
-    );
-  }, [state.deviceId]);
-
-  const writeWithoutResponse = useCallback(async (
-    serviceUUID: string,
-    characteristicUUID: string,
-    base64Value: string
-  ) => {
-    if (!state.deviceId) throw new Error('No connected device');
-
-    return bleManager.writeCharacteristicWithoutResponseForDevice(
-      state.deviceId,
-      serviceUUID,
-      characteristicUUID,
-      base64Value
-    );
-  }, [state.deviceId]);
-
-  // Cleanup when the component using this hook unmounts
-  useEffect(() => {
-    return () => {
-      clearMonitors();
-      disconnectSubRef.current?.remove();
-      disconnectSubRef.current = null;
-      // Do NOT destroy bleManager here if it is used app-wide
-    };
-  }, [clearMonitors]);
-
-  const persistPairedId = useCallback(async (id: string) => {
-    await AsyncStorage.setItem(STORAGE_KEYS.PAIRED_DEVICE_ID, id);
-  }, []);
-
-  const loadPairedId = useCallback(async () => {
-    return AsyncStorage.getItem(STORAGE_KEYS.PAIRED_DEVICE_ID);
-  }, []);
-
-  const clearPairedId = useCallback(async () => {
-    await AsyncStorage.removeItem(STORAGE_KEYS.PAIRED_DEVICE_ID);
   }, []);
 
   const pair = useCallback(async (deviceId: string) => {
-    // connect + discover (your existing connect logic)
-    const device = await connect(deviceId);
-
-    // persist only after success
-    if (!device) {
-      return null;
-    }
-
-    await persistPairedId(device.id);
-    return device;
-  }, [connect, persistPairedId]);
+    reconnectEnabledRef.current = true;
+    persistAfterConnectRef.current = true;
+    const connected = await connect(deviceId);
+    return connected;
+  }, [connect]);
 
   const autoConnect = useCallback(async () => {
     const savedId = await loadPairedId();
     if (!savedId) return null;
-
-    try {
-      const device = await connect(savedId);
-      return device;
-    } catch (e) {
-      // Decide policy:
-      // If connection fails, you can clear it so user is forced to re-pair.
-      await clearPairedId();
-      return null;
-    }
-  }, [connect, loadPairedId, clearPairedId]);
+    reconnectEnabledRef.current = true;
+    return connect(savedId);
+  }, [connect, loadPairedId]);
 
   const forget = useCallback(async () => {
     try {
-      await disconnect(); // cancel connection + cleanup
+      await disconnect();
     } finally {
       await clearPairedId();
     }
-  }, [disconnect, clearPairedId]);
+  }, [clearPairedId, disconnect]);
+
+  useEffect(() => () => {
+    reconnectEnabledRef.current = false;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    disconnectSubRef.current?.remove();
+    void clientRef.current?.disconnect();
+  }, []);
 
   return useMemo(() => ({
     ...state,
+    client,
+    discover,
     connect,
     disconnect,
-    getServices,
-    getCharacteristics,
-    monitor,
-    readCharacteristic,
-    writeWithResponse,
-    writeWithoutResponse,
     pair,
     autoConnect,
     forget,
-  }), [
-    state,
-    connect,
-    disconnect,
-    getServices,
-    getCharacteristics,
-    monitor,
-    readCharacteristic,
-    writeWithResponse,
-    writeWithoutResponse,
-    pair,
-    autoConnect,
-    forget,
-  ]);
+  }), [state, client, discover, connect, disconnect, pair, autoConnect, forget]);
 }

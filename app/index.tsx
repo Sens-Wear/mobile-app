@@ -11,14 +11,14 @@ export default function HomeScreen() {
     let cancelled = false;
     const run = async () => {
       try {
-        const device = await autoConnect();
-        if (!cancelled && device) {
+        const client = await autoConnect();
+        if (!cancelled && client?.deviceId) {
           router.replace({
             pathname: '/sensors',
-            params: { deviceId: device.id },
+            params: { deviceId: client.deviceId },
           });
         }
-      } catch (e) {
+      } catch {
         // optional: handle error or route to pairing
       }
     };
@@ -27,7 +27,7 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [autoConnect, router]);
 
   return (
     <View style={styles.container}>
