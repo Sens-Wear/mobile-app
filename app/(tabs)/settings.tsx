@@ -171,8 +171,8 @@ export default function SettingsScreen() {
         <Text style={styles.sectionTitle}>Platform details</Text>
         <InfoRow label={connectedBoardsLabel} value={connectedBoardsValue} />
         <InfoRow label="Active daughter board" value={activeBoardValue} />
-        <InfoRow label="Firmware version" value="3.1.2" />
-        <InfoRow label="Mobile app version" value="1.3.4" isLast />
+        <InfoRow label="Firmware version" value="0.0.1" />
+        <InfoRow label="Mobile app version" value="0.0.1" isLast />
       </View>
 
       <LinearGradient
