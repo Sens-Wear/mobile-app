@@ -6,6 +6,8 @@ import {
   TOUCH_SERVICE_UUID,
   TOUCH_STATE_UUID,
   serviceUuidForCharacteristic,
+  TouchState,
+  RawTouchSample,
 } from 'senswear'
 import {
   TOUCH_POSITION_MAX,
@@ -33,9 +35,12 @@ describe('published SDK touch BLE interface', () => {
   })
 
   it('presents only the physical one-dimensional touch axis', () => {
-    expect(touchPositionFromSample({ touched: true, x: 2048 })).toBe(2048)
-    expect(touchPositionFromSample({ touched: false, x: 2048 })).toBeNull()
-    expect(touchPositionFromSample({ touched: true, x: 5000 })).toBe(TOUCH_POSITION_MAX)
+    expect(TOUCH_POSITION_MAX).toBe(896)
+    expect(touchPositionFromSample(new TouchState(0n, true, 448, 0))).toBe(448)
+    expect(touchPositionFromSample(new TouchState(0n, false, 448, 0))).toBeNull()
+    expect(touchPositionFromSample(new TouchState(0n, true, 5000, 0))).toBeNull()
+    expect(touchPositionFromSample(new TouchState(0n, true, 448, 128))).toBeNull()
+    expect(touchPositionFromSample(new RawTouchSample(0n, true, 896, 0, 0))).toBe(896)
     expect(touchPositionPercent(TOUCH_POSITION_MAX)).toBe(1)
   })
 })

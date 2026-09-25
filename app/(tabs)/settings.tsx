@@ -16,14 +16,21 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Progress from 'react-native-progress';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
+import { afterStreamCleanup, finishStreamSession } from '@/utils/streamLifecycle';
+import { AVAILABLE_DAUGHTER_BOARDS } from '@/constants/DaughterBoardConstants';
+import { getAppVersion } from '@/constants/AppVersion';
+import { useCsvExport } from '@/hooks/useCsvExport';
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton';
 import {
   BATTERY_LEVEL_STATUS_UUID,
   BATTERY_LEVEL_UUID,
   ChargeState,
+  DeviceFeature,
   type BatteryLevelStatus,
 } from 'senswear';
 
 const WEBSITE_URL = 'https://sens-wear.com';
+const POWER_CSV_COLUMNS = ['received_at_utc', 'event', 'battery_percent', 'battery_present', 'charge_state'];
 
 type InfoRowProps = {
   label: string;
@@ -45,35 +52,56 @@ export default function SettingsScreen() {
   const navigation = useNavigation();
   const [batteryPercent, setBatteryPercent] = useState<number | null>(null);
   const [powerStatus, setPowerStatus] = useState<BatteryLevelStatus | null>(null);
-  const { forget, client, isConnected } = useBle();
+  const {
+    forget, client, isConnected, firmwareVersion, capabilities,
+    isLoadingDeviceInfo, deviceInfoError, refreshDeviceInfo,
+  } = useBle();
   const daughterBoardState = useFocusedDaughterBoardState();
+  const { record, share, sharing } = useCsvExport('Battery', POWER_CSV_COLUMNS);
+  const hasBattery = Boolean(capabilities?.hasFeature(DeviceFeature.Battery));
 
   useFocusEffect(
     React.useCallback(() => {
-      if (!isConnected || !client) {
+      setBatteryPercent(null);
+      setPowerStatus(null);
+      if (!isConnected || !client || !hasBattery) {
         return () => {};
       }
       let active = true;
-      void (async () => {
+      const setup = afterStreamCleanup(client.battery, async () => {
+        if (!active) return;
         const [battery, power] = await Promise.all([client.battery.read(), client.power.read()]);
         if (active) {
           setBatteryPercent(battery.percent);
           setPowerStatus(power);
+          record({ event: 'read', battery_percent: battery.percent, battery_present: power.batteryPresent, charge_state: power.chargeState });
         }
+        if (!active) return;
         await client.battery.subscribe((value) => {
-          if (active) setBatteryPercent(value.percent);
+          if (active) {
+            setBatteryPercent(value.percent);
+            record({ event: 'battery', battery_percent: value.percent });
+          }
         });
+        if (!active) return;
         await client.power.subscribe((value) => {
-          if (active) setPowerStatus(value);
+          if (active) {
+            setPowerStatus(value);
+            record({ event: 'power', battery_present: value.batteryPresent, charge_state: value.chargeState });
+          }
         });
-      })().catch(console.error);
+      }).catch(console.error);
 
       return () => {
         active = false;
-        void client.stopNotify(BATTERY_LEVEL_UUID);
-        void client.stopNotify(BATTERY_LEVEL_STATUS_UUID);
+        finishStreamSession(client.battery, () => setup.then(async () => {
+          await Promise.allSettled([
+            client.stopNotify(BATTERY_LEVEL_UUID),
+            client.stopNotify(BATTERY_LEVEL_STATUS_UUID),
+          ]);
+        }));
       };
-    }, [isConnected, client])
+    }, [isConnected, client, hasBattery, record])
   );
 
   const handleUnpairPress = () => {
@@ -112,15 +140,11 @@ export default function SettingsScreen() {
   const batteryProgress = batteryPercent === null ? 0 : batteryPercent / 100;
   const batteryPercentage = batteryPercent === null ? '--' : `${batteryPercent}%`;
   const chargeColor = isCharging ? '#305CDE' : batteryPercent !== null && batteryPercent > 20 ? '#1C7C54' : '#AF2B1E';
-  const connectedBoardsValue =
-    daughterBoardState.connectedBoardNames.length > 0
-      ? daughterBoardState.connectedBoardNames.join(', ')
-      : 'None detected';
-  const activeBoardValue = connectedBoardsValue;
-  const connectedBoardsLabel =
-    daughterBoardState.connectedBoardNames.length === 1
-      ? 'Connected daughter board'
-      : 'Connected daughter boards';
+  const metadataFallback = !isConnected ? 'Not connected'
+    : isLoadingDeviceInfo ? 'Reading firmware…' : 'Unavailable';
+  const shieldNames = [...daughterBoardState.firmwareBoards] as string[];
+  if (capabilities?.unknownShieldMask) shieldNames.push('Additional shields (app update needed)');
+  const firmwareShields = capabilities ? shieldNames.join(', ') || 'None (base firmware)' : metadataFallback;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -169,10 +193,25 @@ export default function SettingsScreen() {
 
       <View style={styles.sectionCard}>
         <Text style={styles.sectionTitle}>Platform details</Text>
-        <InfoRow label={connectedBoardsLabel} value={connectedBoardsValue} />
-        <InfoRow label="Active daughter board" value={activeBoardValue} />
-        <InfoRow label="Firmware version" value="0.0.1" />
-        <InfoRow label="Mobile app version" value="0.0.1" isLast />
+        <InfoRow label="Available daughter boards" value={AVAILABLE_DAUGHTER_BOARDS.join(', ')} />
+        <InfoRow label="Firmware shields" value={firmwareShields} />
+        <Text style={styles.statusNote}>Shields enabled in the running firmware build.</Text>
+        <InfoRow label="Firmware version" value={firmwareVersion ?? metadataFallback} />
+        <InfoRow label="Mobile app version" value={getAppVersion()} isLast />
+        {deviceInfoError && <Text style={styles.statusNote}>{deviceInfoError.message}</Text>}
+        {isConnected && (
+          <Pressable accessibilityRole="button" onPress={refreshDeviceInfo} disabled={isLoadingDeviceInfo} style={styles.refreshButton}>
+            <Text style={styles.infoLabel}>{isLoadingDeviceInfo ? 'Reading firmware…' : 'Refresh firmware information'}</Text>
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.sectionCard}>
+        <View style={styles.exportRow}>
+          <Text style={styles.sectionTitle}>Export power readings</Text>
+          <View style={styles.exportButton}><CsvShareButton onPress={share} sharing={sharing} /></View>
+        </View>
+        <CsvExportHint />
       </View>
 
       <LinearGradient
@@ -214,6 +253,10 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  statusNote: { color: '#5F6B65', fontSize: 12, lineHeight: 18, paddingVertical: 6 },
+  refreshButton: { alignSelf: 'flex-start', paddingVertical: 14 },
+  exportRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  exportButton: { borderRadius: 21, backgroundColor: '#153B2E' },
   container: {
     flex: 1,
     backgroundColor: '#F5EFE8',

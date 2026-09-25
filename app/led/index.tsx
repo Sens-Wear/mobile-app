@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,24 +8,50 @@ import type { ColorFormatsObject } from 'reanimated-color-picker';
 import ColorPicker, { HueSlider, OpacitySlider, Panel3 } from 'reanimated-color-picker';
 import { colorPickerStyle } from '@/components/ColorPickerStyle';
 import { useBle } from '@/hooks/BleSessionProvider';
+import { useFocusEffect } from '@react-navigation/native'
+import { useCsvExport } from '@/hooks/useCsvExport'
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton'
+
+const CSV_COLUMNS = ['received_at_utc', 'event', 'rgb_hex', 'result', 'error']
 
 export default function LEDScreen() {
   const { client, isConnected } = useBle();
+  const { record, share, sharing } = useCsvExport('LED', CSV_COLUMNS)
   const [loading, setLoading] = useState(true);
   const router = useRouter();
   const [resultColor, setResultColor] = useState('#0000ff');
   const currentColor = useSharedValue('#0000ff');
-  const [isLEDOn, setIsLEDOn] = useState(false);
+  const [isLEDOn, setIsLEDOn] = useState<boolean | null>(null);
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const active = useRef(false)
+  const focusGeneration = useRef(0)
+  const writePending = useRef(false)
+
+  const sendColor = async (event: string, color: string, turnOn: boolean) => {
+    if (!client || !isConnected || !active.current || writePending.current) return
+    const generation = focusGeneration.current
+    writePending.current = true
+    setSending(true)
+    setError(null)
+    record({ event, rgb_hex: color, result: 'write_requested' })
+    try {
+      if (turnOn) await client.led.set(color)
+      else await client.led.off()
+      record({ event, rgb_hex: color, result: 'write_succeeded' })
+      if (active.current && generation === focusGeneration.current) setIsLEDOn(turnOn)
+    } catch (failure) {
+      const message = failure instanceof Error ? failure.message : String(failure)
+      record({ event, rgb_hex: color, result: 'write_failed', error: message })
+      if (active.current && generation === focusGeneration.current) setError(message)
+    } finally {
+      writePending.current = false
+      if (active.current && generation === focusGeneration.current) setSending(false)
+    }
+  }
 
   const turnOnOff = async () => {
-    if (!client) return;
-    if (isLEDOn) {
-      await client.led.off();
-      setIsLEDOn(false);
-    } else {
-      await client.led.set(currentColor.value);
-      setIsLEDOn(true);
-    }
+    await sendColor(isLEDOn ? 'turn_off' : 'turn_on', isLEDOn ? '#000000' : currentColor.value, !isLEDOn)
   };
 
   const onColorChange = (color: ColorFormatsObject) => {
@@ -34,29 +60,45 @@ export default function LEDScreen() {
   };
 
   const onColorPick = async (color: ColorFormatsObject) => {
+    if (!active.current) return
     setResultColor(color.hex);
+    record({ event: 'select_color', rgb_hex: color.hex, result: 'local_selection' })
     if (!isLEDOn) {
       return;
     }
-    await client?.led.set(color.hex);
+    await sendColor('set_color', color.hex, true)
   };
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
     let isMounted = true;
-    (async () => {
+    active.current = true
+    focusGeneration.current++
+    setLoading(true)
+    setSending(false)
+    setError(null)
+    void (async () => {
       try {
-        if (client && isConnected) await client.led.off();
+        if (client && isConnected) {
+          record({ event: 'initialize_off', rgb_hex: '#000000', result: 'write_requested' })
+          await client.led.off();
+          record({ event: 'initialize_off', rgb_hex: '#000000', result: 'write_succeeded' })
+          if (isMounted) setIsLEDOn(false)
+        }
+      } catch (failure) {
+        const message = failure instanceof Error ? failure.message : String(failure)
+        record({ event: 'initialize_off', rgb_hex: '#000000', result: 'write_failed', error: message })
+        if (isMounted) setError(message)
       } finally {
         if (isMounted) {
-          setIsLEDOn(false);
           setLoading(false);
         }
       }
     })();
     return () => {
       isMounted = false;
+      active.current = false
     };
-  }, [client, isConnected]);
+  }, [client, isConnected, record]));
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -70,9 +112,7 @@ export default function LEDScreen() {
             <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
           </TouchableOpacity>
 
-          <View style={styles.heroIconWrap}>
-            <Ionicons name="bulb-outline" size={20} color="#153B2E" />
-          </View>
+          <CsvShareButton onPress={share} sharing={sharing} />
         </View>
 
         <Text style={styles.eyebrow}>LED control</Text>
@@ -89,10 +129,12 @@ export default function LEDScreen() {
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="radio-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>{isLEDOn ? 'LED on' : 'LED off'}</Text>
+            <Text style={styles.metaPillText}>{isLEDOn === null ? 'LED state unknown' : isLEDOn ? 'LED on' : 'LED off'}</Text>
           </View>
         </View>
       </LinearGradient>
+      <CsvExportHint />
+      {error && <Text accessibilityRole="alert" style={styles.summaryHint}>{error}</Text>}
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>
@@ -105,7 +147,7 @@ export default function LEDScreen() {
         </View>
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Power state</Text>
-          <Text style={styles.summaryValue}>{isLEDOn ? 'Active' : 'Standby'}</Text>
+          <Text style={styles.summaryValue}>{isLEDOn === null ? 'Unknown' : isLEDOn ? 'Active' : 'Standby'}</Text>
           <Text style={styles.summaryHint}>Toggling sends either the chosen color or black.</Text>
         </View>
       </View>
@@ -148,6 +190,9 @@ export default function LEDScreen() {
 
           <TouchableOpacity
             style={[styles.actionButton, isLEDOn ? styles.actionButtonOff : styles.actionButtonOn]}
+            disabled={!isConnected || sending}
+            accessibilityRole="button"
+            accessibilityLabel={isLEDOn ? 'Turn LED off' : 'Turn LED on'}
             onPress={turnOnOff}>
             <Ionicons
               name={isLEDOn ? 'power-outline' : 'flash-outline'}

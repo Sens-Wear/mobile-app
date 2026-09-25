@@ -19,8 +19,9 @@ import {
   isSensorModuleAvailable,
 } from '@/ble/daughterBoardState';
 import { useFocusedDaughterBoardState } from '@/hooks/useFocusedDaughterBoardState';
+import { afterStreamCleanup, finishStreamSession } from '@/utils/streamLifecycle';
 import type { SensorModuleKey } from '@/constants/DaughterBoardConstants';
-import { BATTERY_LEVEL_STATUS_UUID, BATTERY_LEVEL_UUID, ChargeState } from 'senswear';
+import { BATTERY_LEVEL_STATUS_UUID, BATTERY_LEVEL_UUID, ChargeState, DeviceFeature } from 'senswear';
 
 type SensorDefinition = {
   id: string;
@@ -52,7 +53,7 @@ const sensors: SensorDefinition[] = [
     id: '3',
     name: 'PPG',
     moduleKey: 'PPG',
-    description: 'Heart-rate signal and pulse trends',
+    description: 'Red, infrared and green raw PPG signals',
     icon: require('@/assets/images/dashboard_icons/heart_rate.png'),
     link: '/ppg',
   },
@@ -60,7 +61,7 @@ const sensors: SensorDefinition[] = [
     id: '4',
     name: 'Temperature',
     moduleKey: 'Temperature',
-    description: 'Body and ambient temperature checks',
+    description: 'Live temperature measurements',
     icon: require('@/assets/images/dashboard_icons/temperature.png'),
     link: '/temperature',
   },
@@ -87,7 +88,8 @@ const WEBSITE_URL = 'https://sens-wear.com';
 export default function SensorsScreen() {
   const [batteryPercent, setBatteryPercent] = useState<number | null>(null);
   const [isCharging, setIsCharging] = useState(false);
-  const { client, isConnected } = useBle();
+  const { client, isConnected, capabilities, isLoadingDeviceInfo, refreshDeviceInfo } = useBle();
+  const hasBattery = Boolean(capabilities?.hasFeature(DeviceFeature.Battery));
   const daughterBoardState = useFocusedDaughterBoardState();
   const router = useRouter();
 
@@ -110,34 +112,45 @@ export default function SensorsScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      if (!isConnected || !client) {
+      setBatteryPercent(null);
+      setIsCharging(false);
+      if (!isConnected || !client || !hasBattery) {
         return () => {};
       }
       let active = true;
-      void (async () => {
+      const setup = afterStreamCleanup(client.battery, async () => {
+        if (!active) return;
         const [battery, power] = await Promise.all([client.battery.read(), client.power.read()]);
         if (active) {
           setBatteryPercent(battery.percent);
           setIsCharging(power.chargeState === ChargeState.Charging);
         }
+        if (!active) return;
         await client.battery.subscribe((value) => {
           if (active) setBatteryPercent(value.percent);
         });
+        if (!active) return;
         await client.power.subscribe((value) => {
           if (active) setIsCharging(value.chargeState === ChargeState.Charging);
         });
-      })().catch(console.error);
+      }).catch(console.error);
 
       return () => {
         active = false;
-        void client.stopNotify(BATTERY_LEVEL_UUID);
-        void client.stopNotify(BATTERY_LEVEL_STATUS_UUID);
+        finishStreamSession(client.battery, () => setup.then(async () => {
+          await Promise.allSettled([
+            client.stopNotify(BATTERY_LEVEL_UUID),
+            client.stopNotify(BATTERY_LEVEL_STATUS_UUID),
+          ]);
+        }));
       };
-    }, [isConnected, client])
+    }, [isConnected, client, hasBattery])
   );
 
-  const handleSelectSensor = (pathName: string) => {
-    router.push({ pathname: pathName as never });
+  const handleSelectSensor = (sensor: SensorDefinition) => {
+    if (isSensorModuleAvailable(sensor.moduleKey, daughterBoardState)) {
+      router.push({ pathname: sensor.link as never });
+    }
   };
 
   const handleOpenWebsite = async () => {
@@ -212,6 +225,17 @@ export default function SensorsScreen() {
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Sensor shortcuts</Text>
               <Text style={styles.sectionCaption}>Jump straight into live controls and readings.</Text>
+              <Text style={styles.sectionCaption}>
+                {!isConnected ? 'Connect a device to use its modules.'
+                  : isLoadingDeviceInfo ? 'Checking firmware support…'
+                    : !capabilities ? 'Firmware capabilities unavailable. Refresh or update the firmware.'
+                      : 'Enabled modules match the running firmware and its shields.'}
+              </Text>
+              {isConnected && !isLoadingDeviceInfo && !capabilities && (
+                <TouchableOpacity accessibilityRole="button" onPress={refreshDeviceInfo}>
+                  <Text style={styles.sectionCaption}>Refresh firmware information</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </>
         }
@@ -246,11 +270,10 @@ export default function SensorsScreen() {
           const isAvailable = isSensorModuleAvailable(item.moduleKey, daughterBoardState);
           const isActive = isSensorModuleActive(item.moduleKey, daughterBoardState);
           const statusLabel =
-            item.moduleKey === 'IMU' || item.moduleKey === 'LED'
+            !isAvailable ? (!isConnected ? 'Not connected' : isLoadingDeviceInfo ? 'Checking…' : 'Unavailable')
+              : item.moduleKey === 'IMU' || item.moduleKey === 'LED'
               ? 'Main board'
-              : isAvailable
-                ? 'Active board'
-                : 'Not connected';
+              : 'Firmware enabled';
 
           return (
             <TouchableOpacity
@@ -259,7 +282,10 @@ export default function SensorsScreen() {
                 !isAvailable && styles.sensorItemDisabled,
                 isActive && styles.sensorItemActive,
               ]}
-              onPress={() => handleSelectSensor(item.link)}
+              accessibilityRole="button"
+              accessibilityLabel={item.name}
+              accessibilityState={{ disabled: !isAvailable }}
+              onPress={() => handleSelectSensor(item)}
               disabled={!isAvailable}>
               <View
                 style={[

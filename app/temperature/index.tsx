@@ -7,6 +7,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
 import Legend from '@/components/ui/Legend';
 import { useBle } from '@/hooks/BleSessionProvider';
+import { useCsvExport } from '@/hooks/useCsvExport'
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton'
+import { afterStreamCleanup, finishStreamSession } from '@/utils/streamLifecycle'
+
+const CSV_COLUMNS = ['received_at_utc', 'device_timestamp_utc', 'temperature_c', 'temperature_type', 'flags']
 
 const MAX_LENGTH = 100;
 const BUFFER_LIMIT = 100;
@@ -16,6 +21,7 @@ type ChartPoint = { value: number };
 
 export default function TemperatureScreen() {
   const { isConnected, client } = useBle();
+  const { record, share, sharing } = useCsvExport('Temperature', CSV_COLUMNS)
   const [temperatureData, setTemperatureData] = useState<ChartPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
@@ -63,15 +69,21 @@ export default function TemperatureScreen() {
         }
       };
 
-      void (async () => {
+      const setup = afterStreamCleanup(client.temperature, async () => {
+        if (!isActive) return
         const intervalSeconds = await client.temperature.readMeasurementInterval();
+        if (!isActive) return;
+        await client.temperature.subscribe((sample) => {
+          if (!isActive) return
+          record({ device_timestamp_utc: sample.timestamp?.toISOString(), temperature_c: sample.temperatureC,
+            temperature_type: sample.type, flags: sample.flags })
+          pushTemperature(sample.temperatureC)
+        });
+        if (!isActive) return;
         if (intervalSeconds === 0) {
           await client.temperature.setMeasurementInterval(60);
         }
-        await client.temperature.subscribe((sample) => {
-          if (isActive) pushTemperature(sample.temperatureC);
-        });
-      })().catch((error) => {
+      }).catch((error) => {
         console.error(error);
         if (isActive) setLoading(false);
       });
@@ -93,11 +105,11 @@ export default function TemperatureScreen() {
 
       return () => {
         isActive = false;
-        void client.temperature.unsubscribe();
+        finishStreamSession(client.temperature, () => setup.then(() => client.temperature.unsubscribe()));
         clearInterval(interval);
         temperatureBufferRef.current = [];
       };
-    }, [isConnected, client])
+    }, [isConnected, client, record])
   );
 
   useEffect(() => {
@@ -126,9 +138,7 @@ export default function TemperatureScreen() {
             <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
           </TouchableOpacity>
 
-          <View style={styles.heroIconWrap}>
-            <Ionicons name="thermometer-outline" size={20} color="#153B2E" />
-          </View>
+          <CsvShareButton onPress={share} sharing={sharing} />
         </View>
 
         <Text style={styles.eyebrow}>Temperature live view</Text>
@@ -149,6 +159,7 @@ export default function TemperatureScreen() {
           </View>
         </View>
       </LinearGradient>
+      <CsvExportHint />
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>

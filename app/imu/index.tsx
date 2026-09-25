@@ -16,6 +16,12 @@ import { LineChart } from 'react-native-gifted-charts';
 import Legend from '@/components/ui/Legend';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { IMU_ACCELEROMETER_UUID, IMU_QUATERNION_UUID } from 'senswear';
+import { useCsvExport } from '@/hooks/useCsvExport'
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton'
+import { afterStreamCleanup, finishStreamSession } from '@/utils/streamLifecycle'
+
+const CSV_COLUMNS = ['received_at_utc', 'device_timestamp_us', 'stream', 'acceleration_x_g',
+  'acceleration_y_g', 'acceleration_z_g', 'quaternion_x', 'quaternion_y', 'quaternion_z', 'quaternion_w']
 
 const MAX_LENGTH = 500;
 const BUFFER_LIMIT = 500;
@@ -24,6 +30,7 @@ const CHART_WIDTH = SCREEN_WIDTH - 80;
 
 export default function DevicesScreen() {
   const { client, isConnected } = useBle();
+  const { record, share, sharing } = useCsvExport('IMU', CSV_COLUMNS)
   const [accData, setAccData] = useState<{
     x: { value: number }[]; y: { value: number }[]; z: { value: number }[];
   }>({
@@ -50,11 +57,16 @@ export default function DevicesScreen() {
       }
       let active = true;
       setLoading(true);
-      void (async () => {
+      const setup = afterStreamCleanup(client.imu, async () => {
+        if (!active) return
         await client.imu.setEnabled(true);
+        if (!active) return;
         await client.imu.setDrainPeriodMs(100);
+        if (!active) return;
         await client.imu.subscribeAccelerometer((sample) => {
           if (!active) return;
+          record({ device_timestamp_us: sample.timestampUs, stream: 'accelerometer',
+            acceleration_x_g: sample.xG, acceleration_y_g: sample.yG, acceleration_z_g: sample.zG })
           const dataToPush = {
             x: sample.xG,
             y: sample.yG,
@@ -65,8 +77,11 @@ export default function DevicesScreen() {
             accBufferRef.current.splice(0, accBufferRef.current.length - BUFFER_LIMIT);
           }
         });
+        if (!active) return;
         await client.imu.subscribeQuaternion((sample) => {
           if (!active) return;
+          record({ device_timestamp_us: sample.timestampUs, stream: 'quaternion',
+            quaternion_x: sample.x, quaternion_y: sample.y, quaternion_z: sample.z, quaternion_w: sample.w })
           const dataToPush = {
             x: sample.x, y: sample.y, z: sample.z, w: sample.w,
           };
@@ -75,7 +90,10 @@ export default function DevicesScreen() {
             gyroBufferRef.current.splice(0, gyroBufferRef.current.length - BUFFER_LIMIT);
           }
         });
-      })().catch(console.error);
+      }).catch((error) => {
+        console.error(error)
+        if (active) setLoading(false)
+      });
 
       const interval = setInterval(() => {
         const accBatch = accBufferRef.current.splice(0);
@@ -127,13 +145,17 @@ export default function DevicesScreen() {
 
       return () => {
         active = false;
-        void client.imu.unsubscribe(IMU_ACCELEROMETER_UUID);
-        void client.imu.unsubscribe(IMU_QUATERNION_UUID);
+        finishStreamSession(client.imu, () => setup.then(async () => {
+          await Promise.allSettled([
+            client.imu.unsubscribe(IMU_ACCELEROMETER_UUID),
+            client.imu.unsubscribe(IMU_QUATERNION_UUID),
+          ])
+        }));
         clearInterval(interval);
         accBufferRef.current = [];
         gyroBufferRef.current = [];
       };
-    }, [client, isConnected])
+    }, [client, isConnected, record])
   );
 
   useEffect(() => {
@@ -168,9 +190,7 @@ export default function DevicesScreen() {
             <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
           </TouchableOpacity>
 
-          <View style={styles.heroIconWrap}>
-            <Ionicons name="pulse-outline" size={22} color="#153B2E" />
-          </View>
+          <CsvShareButton onPress={share} sharing={sharing} />
         </View>
 
         <Text style={styles.eyebrow}>IMU live view</Text>
@@ -191,6 +211,7 @@ export default function DevicesScreen() {
           </View>
         </View>
       </LinearGradient>
+      <CsvExportHint />
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>

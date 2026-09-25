@@ -20,6 +20,7 @@
     "@react-navigation/bottom-tabs": "^7.2.0",
     "@react-navigation/native": "^7.0.14",
     "expo": "~52.0.43",
+    "expo-application": "6.0.2",
     "expo-blur": "~14.0.3",
     "expo-constants": "~17.0.8",
     "expo-dev-client": "~5.0.19",
@@ -49,7 +50,7 @@
     "react-native-web": "~0.19.13",
     "react-native-webview": "13.12.5",
     "reanimated-color-picker": "^4.2.0",
-    "senswear": "0.2.0"
+    "senswear": "file:vendor/senswear-0.4.0.tgz"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +9,12 @@ import {
   buildHapticPattern,
 } from '@/ble/hapticPatterns';
 import { useBle } from '@/hooks/BleSessionProvider';
+import { useFocusEffect } from '@react-navigation/native'
+import { useCsvExport } from '@/hooks/useCsvExport'
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton'
+
+const CSV_COLUMNS = ['received_at_utc', 'event', 'source', 'pattern_name', 'frame_index',
+  'frame_duration_ms', 'intensity_0_255', 'total_duration_ms', 'result', 'error']
 
 type DemoMode = 'Pulse' | 'Pattern';
 type PatternSource = 'Preset' | 'Morse';
@@ -152,6 +158,7 @@ function buildMorseFrames(word: string) {
 
 export default function VibrationScreen() {
   const { isConnected, client } = useBle();
+  const { record, share, sharing } = useCsvExport('Vibration', CSV_COLUMNS)
   const router = useRouter();
   const [mode, setMode] = useState<DemoMode>('Pulse');
   const [patternSource, setPatternSource] = useState<PatternSource>('Preset');
@@ -162,6 +169,19 @@ export default function VibrationScreen() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const active = useRef(false)
+  const focusGeneration = useRef(0)
+  const writePending = useRef(false)
+
+  useFocusEffect(useCallback(() => {
+    active.current = true
+    focusGeneration.current++
+    setIsSending(false)
+    return () => {
+      active.current = false
+      setIsPlaying(false)
+    }
+  }, []))
 
   const availablePresets = useMemo(() => PRESETS.filter((preset) => preset.family === mode), [mode]);
 
@@ -242,12 +262,23 @@ export default function VibrationScreen() {
   }, [normalizedMorseWord, patternSource]);
 
   const startPreview = async () => {
-    if (!isConnected || !client || controlsLocked || !hapticPattern) {
+    if (!isConnected || !client || controlsLocked || !hapticPattern || !active.current || writePending.current) {
       return;
     }
 
     setSendError(null);
     setIsSending(true);
+    writePending.current = true
+    const generation = focusGeneration.current
+    const event = mode === 'Pulse' && hapticPattern.frames.length === 1 ? 'vibrate' : 'play_pattern'
+    const captureResult = (result: string, error?: string) => {
+      hapticPattern.frames.forEach((frame, index) => record({ event, source: patternSource,
+        pattern_name: patternSource === 'Morse' ? normalizedMorseWord : selectedPreset.name,
+        frame_index: index, frame_duration_ms: frame.durationMs, intensity_0_255: frame.intensity,
+        total_duration_ms: hapticPattern.totalDurationMs,
+        result, error }))
+    }
+    captureResult('write_requested')
 
     try {
       if (mode === 'Pulse' && hapticPattern.frames.length === 1) {
@@ -256,18 +287,24 @@ export default function VibrationScreen() {
       } else {
         await client.haptic.play(hapticPattern);
       }
+      captureResult('write_succeeded')
+      if (!active.current || generation !== focusGeneration.current) return
       setElapsedMs(0);
       setIsPlaying(true);
     } catch (error) {
+      captureResult('write_failed', error instanceof Error ? error.message : String(error))
+      if (!active.current || generation !== focusGeneration.current) return
       setIsPlaying(false);
       setElapsedMs(0);
       setSendError(error instanceof Error ? error.message : 'Failed to send haptic pattern.');
     } finally {
-      setIsSending(false);
+      writePending.current = false
+      if (active.current && generation === focusGeneration.current) setIsSending(false);
     }
   };
 
   const resetPreview = () => {
+    record({ event: 'reset_preview', result: 'local_preview_only' })
     setElapsedMs(0);
     setIsPlaying(false);
   };
@@ -320,9 +357,7 @@ export default function VibrationScreen() {
             <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
           </TouchableOpacity>
 
-          <View style={styles.heroIconWrap}>
-            <Ionicons name="pulse-outline" size={20} color="#153B2E" />
-          </View>
+          <CsvShareButton onPress={share} sharing={sharing} />
         </View>
 
         <Text style={styles.eyebrow}>Vibration demo</Text>
@@ -340,6 +375,7 @@ export default function VibrationScreen() {
           </View>
         </View>
       </LinearGradient>
+      <CsvExportHint />
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>

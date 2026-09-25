@@ -13,24 +13,26 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
+import { useCsvExport } from '@/hooks/useCsvExport'
+import { CsvShareButton, CsvExportHint } from '@/components/CsvShareButton'
+import { afterStreamCleanup, finishStreamSession } from '@/utils/streamLifecycle'
 import Legend from '@/components/ui/Legend';
 import { useBle } from '@/hooks/BleSessionProvider';
 import { PPG_GREEN_UUID, PPG_INFRARED_UUID, PPG_RED_UUID } from 'senswear';
 
 const MAX_LENGTH = 500;
+const CSV_COLUMNS = ['received_at_utc', 'device_timestamp_ms', 'channel', 'value_raw_adc']
 const BUFFER_LIMIT = 500;
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CHART_WIDTH = SCREEN_WIDTH - 80;
 
 export default function DevicesScreen() {
   const { client, isConnected } = useBle();
+  const { record, share, sharing } = useCsvExport('PPG', CSV_COLUMNS)
   const [rawRedData, setRawRedData] = useState<{ value: number }[]>([]);
   const [rawIRData, setRawIRData] = useState<{ value: number }[]>([]);
   const [rawGreenData, setRawGreenData] = useState<{ value: number }[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isShareAvailable, setIsShareAvailable] = useState(false);
   const lastRedScrollRef = useRef(0);
   const lastIRScrollRef = useRef(0);
   const lastGreenScrollRef = useRef(0);
@@ -39,16 +41,8 @@ export default function DevicesScreen() {
   const rawIRDataChartRef = useRef<any>(null);
   const rawGreenDataChartRef = useRef<any>(null);
   const rawGreenBufferRef = useRef<{ green: number }[]>([]);
-  const csvRowsRef = useRef<string[]>([]);
-  const csvUriRef = useRef<string | null>(null);
   const rawRedBufferRef = useRef<{ red: number }[]>([]);
   const rawIRBufferRef = useRef<{ ir: number }[]>([]);
-
-  useEffect(() => {
-    Sharing.isAvailableAsync()
-      .then(setIsShareAvailable)
-      .catch(() => setIsShareAvailable(false));
-  }, []);
 
   const getPaddedRange = (data: { value: number }[]) => {
     if (!data || data.length === 0) return undefined;
@@ -79,35 +73,41 @@ export default function DevicesScreen() {
         return () => {};
       }
       let active = true;
-      csvUriRef.current = FileSystem.documentDirectory + `ppg-${Date.now()}.csv`;
-      csvRowsRef.current = ['timestamp_ms,channel,value'];
-      void (async () => {
+      setLoading(true);
+      const setup = afterStreamCleanup(client.ppg, async () => {
+        if (!active) return
         await client.ppg.setSamplingEnabled(true);
+        if (!active) return;
         await client.ppg.subscribeRed((sample) => {
           if (!active) return;
           rawRedBufferRef.current.push({ red: sample.value });
-          csvRowsRef.current.push(`${sample.timestampMs.toString()},red,${sample.value}`);
+          record({ device_timestamp_ms: sample.timestampMs, channel: 'red', value_raw_adc: sample.value })
           if (rawRedBufferRef.current.length > BUFFER_LIMIT) {
             rawRedBufferRef.current.splice(0, rawRedBufferRef.current.length - BUFFER_LIMIT);
           }
         });
+        if (!active) return;
         await client.ppg.subscribeInfrared((sample) => {
           if (!active) return;
           rawIRBufferRef.current.push({ ir: sample.value });
-          csvRowsRef.current.push(`${sample.timestampMs.toString()},ir,${sample.value}`);
+          record({ device_timestamp_ms: sample.timestampMs, channel: 'ir', value_raw_adc: sample.value })
           if (rawIRBufferRef.current.length > BUFFER_LIMIT) {
             rawIRBufferRef.current.splice(0, rawIRBufferRef.current.length - BUFFER_LIMIT);
           }
         });
+        if (!active) return;
         await client.ppg.subscribeGreen((sample) => {
           if (!active) return;
           rawGreenBufferRef.current.push({ green: sample.value });
-          csvRowsRef.current.push(`${sample.timestampMs.toString()},green,${sample.value}`);
+          record({ device_timestamp_ms: sample.timestampMs, channel: 'green', value_raw_adc: sample.value })
           if (rawGreenBufferRef.current.length > BUFFER_LIMIT) {
             rawGreenBufferRef.current.splice(0, rawGreenBufferRef.current.length - BUFFER_LIMIT);
           }
         });
-      })().catch(console.error);
+      }).catch((error) => {
+        console.error(error)
+        if (active) setLoading(false)
+      });
 
       const interval = setInterval(() => {
         const redBatch = rawRedBufferRef.current.splice(0);
@@ -150,35 +150,20 @@ export default function DevicesScreen() {
 
       return () => {
         active = false;
-        void client.ppg.unsubscribe(PPG_RED_UUID);
-        void client.ppg.unsubscribe(PPG_INFRARED_UUID);
-        void client.ppg.unsubscribe(PPG_GREEN_UUID);
+        finishStreamSession(client.ppg, () => setup.then(async () => {
+          await Promise.allSettled([
+            client.ppg.unsubscribe(PPG_RED_UUID),
+            client.ppg.unsubscribe(PPG_INFRARED_UUID),
+            client.ppg.unsubscribe(PPG_GREEN_UUID),
+          ])
+        }));
         clearInterval(interval);
         rawRedBufferRef.current = [];
         rawIRBufferRef.current = [];
         rawGreenBufferRef.current = [];
-        if (csvUriRef.current && csvRowsRef.current.length > 1) {
-          const contents = csvRowsRef.current.join('\n') + '\n';
-          FileSystem.writeAsStringAsync(csvUriRef.current, contents, {
-            encoding: FileSystem.EncodingType.UTF8,
-          }).catch((e) => console.log(e));
-        }
       };
-    }, [client, isConnected])
+    }, [client, isConnected, record])
   );
-
-  const shareCsv = async () => {
-    if (!isShareAvailable || !csvUriRef.current || csvRowsRef.current.length <= 1) return;
-    const contents = csvRowsRef.current.join('\n') + '\n';
-    await FileSystem.writeAsStringAsync(csvUriRef.current, contents, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-    await Sharing.shareAsync(csvUriRef.current, {
-      mimeType: 'text/csv',
-      UTI: 'public.comma-separated-values-text',
-      dialogTitle: 'Share PPG CSV',
-    });
-  };
 
   useEffect(() => {
     if (rawRedDataChartRef.current) {
@@ -222,16 +207,7 @@ export default function DevicesScreen() {
             <Ionicons name="chevron-back" size={20} color="#F7F0E8" />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={shareCsv}
-            disabled={!isShareAvailable}
-            style={[styles.iconButton, !isShareAvailable && styles.iconButtonDisabled]}>
-            <Ionicons
-              name="share-outline"
-              size={18}
-              color={isShareAvailable ? '#F7F0E8' : 'rgba(247, 240, 232, 0.45)'}
-            />
-          </TouchableOpacity>
+          <CsvShareButton onPress={share} sharing={sharing} />
         </View>
 
         <Text style={styles.eyebrow}>PPG live view</Text>
@@ -247,7 +223,7 @@ export default function DevicesScreen() {
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="download-outline" size={15} color="#153B2E" />
-            <Text style={styles.metaPillText}>{isShareAvailable ? 'CSV export ready' : 'Share unavailable'}</Text>
+            <Text style={styles.metaPillText}>CSV export</Text>
           </View>
           <View style={styles.metaPill}>
             <Ionicons name="radio-outline" size={15} color="#153B2E" />
@@ -255,6 +231,7 @@ export default function DevicesScreen() {
           </View>
         </View>
       </LinearGradient>
+      <CsvExportHint />
 
       <View style={styles.summaryRow}>
         <View style={styles.summaryCard}>
